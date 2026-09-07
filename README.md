@@ -2,7 +2,7 @@
 
 Infrastructure auto-hébergée sur un serveur dédié OVHCloud, conçue selon les principes d'une architecture de production réelle : segmentation réseau, cloisonnement des rôles, sécurité en profondeur, sauvegarde et supervision.
 
-> **Deuxième itération du projet.** La première version, contrainte à 8 Go de RAM sur un poste personnel, est conservée telle quelle ici : [homelab-infra](#) — *lien à mettre à jour*. Ce nouveau projet reprend les mêmes principes d'architecture sur un vrai serveur dédié, avec les moyens de faire du réellement production-grade plutôt qu'un compromis matériel.
+> **Deuxième itération du projet.** La première version, contrainte à 8 Go de RAM sur un poste personnel, est conservée telle quelle ici : [homelab-infra](https://github.com/chellala-cloud/homelab-infra). Ce nouveau projet reprend les mêmes principes d'architecture sur un vrai serveur dédié, avec les moyens de faire du réellement production-grade plutôt qu'un compromis matériel.
 
 ## Sommaire
 

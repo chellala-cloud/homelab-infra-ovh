@@ -19,7 +19,6 @@ Infrastructure auto-hébergée sur un serveur dédié OVHCloud, conçue selon le
 
 ## Vue d'ensemble
 
-```
 ```mermaid
 graph TD
     Internet[Internet / IP Additionnelle OVH] -->|vMAC OVH| VMBR0[vmbr0 - Bridge WAN L2]
@@ -45,7 +44,7 @@ graph TD
     classDef router fill:#003366,stroke:#0066cc,stroke-width:2px,color:#fff;
     class Proxmox host;
     class PFSENSE router;
-
+```
 
 
 

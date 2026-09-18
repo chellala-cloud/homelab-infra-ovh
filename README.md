@@ -1,23 +1,16 @@
-# Homelab infra OVH — Architecture de production (pfSense / VLAN / Proxmox VE)
+# 🛡️ Infrastructure Réseau & Sécurité Multi-VLAN sur Proxmox VE
 
-Infrastructure auto-hébergée sur un serveur dédié OVHCloud, conçue selon les principes d'une architecture de production réelle : segmentation réseau, cloisonnement des rôles, sécurité en profondeur, sauvegarde et supervision.
+![Proxmox](https://img.shields.io/badge/Proxmox_VE-9.x-E57000?logo=proxmox&logoColor=white)
+![pfSense](https://img.shields.io/badge/pfSense-2.7.x-212F3D?logo=pfsense&logoColor=white)
+![Traefik](https://img.shields.io/badge/Traefik-v3-24A1DE?logo=traefik&logoColor=white)
+![Licence](https://img.shields.io/badge/License-MIT-blue.svg)
 
-> **Deuxième itération du projet.** La première version, contrainte à 8 Go de RAM sur un poste personnel, est conservée telle quelle ici : [homelab-infra](https://github.com/chellala-cloud/homelab-infra). Ce nouveau projet reprend les mêmes principes d'architecture sur un vrai serveur dédié, avec les moyens de faire du réellement production-grade plutôt qu'un compromis matériel.
+> **Projet de déploiement d'une infrastructure d'entreprise sécurisée sur serveur dédié OVHcloud.**  
+> Ce dépôt documente l'architecture réseau complète : segmentation par VLANs sous pfSense (Routed Bridge), filtrage applicatif (Traefik, WAF, CrowdSec), durcissement système et observabilité.
 
-## Sommaire
+---
 
-- [Vue d'ensemble](#vue-densemble)
-- [Infrastructure physique](#infrastructure-physique)
-- [Segmentation réseau](#segmentation-réseau)
-- [Détail des composants](#détail-des-composants)
-- [Sécurité — défense en profondeur](#sécurité--défense-en-profondeur)
-- [Sauvegarde et observabilité](#sauvegarde-et-observabilité)
-- [Limites connues](#limites-connues)
-- [Documentation complète](#documentation-complète)
-- [Stack technique](#stack-technique)
-- [Roadmap](#roadmap)
-
-## Vue d'ensemble
+## Vue d'ensemble de l'architecture
 
 ```mermaid
 graph TD
@@ -46,106 +39,121 @@ graph TD
     class PFSENSE router;
 ```
 
-
-
-
-
-
-
-
-
-
-
+---
 
 ## Infrastructure physique
 
 | Composant | Spécification |
-|---|---|
-| Fournisseur | OVHCloud, serveur dédié |
-| CPU | Intel Xeon E3-1230v6 — 4c/8t — 3.5/3.9 GHz |
-| RAM | 32 Go ECC 2133 MHz |
-| Stockage | 2×2 To HDD SATA, RAID logiciel |
-| Hyperviseur | Proxmox VE 9 (template officiel OVHcloud) |
+| :--- | :--- |
+| **Fournisseur** | OVHcloud, serveur dédié |
+| **CPU** | Intel Xeon E3-1230v6 — 4c/8t — 3.5/3.9 GHz |
+| **RAM** | 32 Go ECC 2133 MHz |
+| **Stockage** | 2×2 To HDD SATA, RAID logiciel |
+| **Hyperviseur** | Proxmox VE 9 (template officiel OVHcloud) |
+
+---
 
 ## Segmentation réseau
 
-pfSense est le point d'entrée unique du réseau, configuré en architecture **Routed Bridge** (spécificité OVHCloud : les IP failover sont routées vers la MAC unique du serveur, pfSense assure ensuite le routage interne vers chaque VM).
+pfSense est le point d'entrée unique du réseau, configuré en architecture **Routed Bridge** (spécificité OVHcloud : l'IP Additional est associée à une vMAC attribuée à la carte réseau virtuelle de pfSense, qui assure le routage et le filtrage interne vers chaque VM).
 
-Quatre VLAN séparent les rôles par fonction :
+Quatre VLANs séparent les rôles par fonction :
 
 | VLAN | Rôle | Accès entrant autorisé |
-|---|---|---|
-| DMZ | Reverse proxy, WAF | pfSense uniquement (443/80) |
-| APP | Serveur web (Apache, PHP) | VLAN DMZ uniquement |
-| DATA | Base de données (MariaDB) | VLAN APP uniquement, port 3306 |
-| MGMT | Sauvegarde, supervision | Accès restreint, jamais exposé publiquement |
+| :--- | :--- | :--- |
+| **DMZ (10)** | Reverse proxy, WAF | Internet via pfSense (ports 80/443 uniquement) |
+| **APP (20)** | Serveur web (Apache, PHP) | VLAN DMZ uniquement |
+| **DATA (30)** | Base de données (MariaDB) | VLAN APP uniquement (port 3306) |
+| **MGMT (40)** | Sauvegarde, supervision, PVE | Accès distant via **VPN WireGuard (pfSense)** uniquement |
 
-Le détail des règles de filtrage inter-VLAN est documenté dans [`docs/02-reseau-vlan.md`](docs/02-reseau-vlan.md).
+Le détail des règles de filtrage inter-VLAN est documenté dans [docs/02-reseau-vlan.md](docs/02-reseau-vlan.md).
+
+---
 
 ## Détail des composants
 
-### Firewall — pfSense
-Filtrage réseau (IP/port/protocole/état), NAT sortant pour les VLAN internes, routage inter-VLAN strict. Configuration détaillée : [`docs/03-pfsense.md`](docs/03-pfsense.md).
+* **Firewall / Routeur / DNS — pfSense :** 
+  * Filtrage réseau L3/L4, NAT sortant, routage inter-VLAN strict.
+  * Serveur **VPN WireGuard** pour l'accès d'administration sécurisé au VLAN MGMT et à l'IHM Proxmox (`:8006`).
+  * Service **Unbound DNS (Split-Horizon)** pour la résolution directe des noms de domaine internes sans passer par le WAN (évite le Hairpin NAT). Configuration détaillée : [docs/03-pfsense.md](docs/03-pfsense.md).
 
-### Reverse Proxy (VLAN DMZ)
-Termine le TLS, route selon le nom de domaine vers le serveur web interne, masque l'existence réelle de la VM web.
+* **Reverse Proxy & Edge Security (VLAN DMZ) :** 
+  * **Traefik :** Gestion SSL/TLS automatique (Let's Encrypt), routage dynamique vers les conteneurs/VMs internes.
+  * **WAF + CrowdSec :** Inspection applicative HTTP (L7) et blocage collaboratif des IP malveillantes.
 
-### Serveur Web (VLAN APP)
-Apache + PHP, VirtualHosts nommés, hébergeant l'ERP OpenConcerto — [`docs/05-erp-openconcerto.md`](docs/05-erp-openconcerto.md).
+* **Serveur Web (VLAN APP) :** 
+  * Apache + PHP, VirtualHosts nommés, hébergeant l'ERP OpenConcerto — [docs/05-erp-openconcerto.md](docs/05-erp-openconcerto.md).
 
-### Base de données (VLAN DATA)
-MariaDB, jamais accessible directement depuis l'extérieur ni depuis un autre VLAN que APP.
+* **Base de données (VLAN DATA) :** 
+  * MariaDB, accessible uniquement depuis le VLAN APP sur le port 3306.
+
+---
 
 ## Sécurité — défense en profondeur
 
-Plusieurs couches de sécurité indépendantes, chacune répondant à une question différente :
+Plusieurs couches de sécurité indépendantes, chacune répondant à un besoin spécifique :
 
-- **pfSense / VLAN** — quels segments réseau ont le droit de se parler
-- **nftables** (sur chaque VM) — quelle machine précise, sur quel port précis, a le droit de joindre celle-ci
-- **SSH durci** — authentification par clé uniquement, connexion root désactivée
-- **Fail2ban** — bannissement automatique après tentatives de connexion répétées
-- **WAF** sur le reverse proxy — filtrage applicatif HTTP
+* **pfSense / VLANs :** Isolation réseau L2/L3 et filtrage inter-VLAN strict.
+* **nftables (sur chaque VM) :** Pare-feu local filtrant strictly les flux entrants/sortants au niveau de l'hôte virtuel.
+* **CrowdSec :** Détection d'intrusions et bannissement automatique comportemental.
+* **WAF (sur Traefik) :** Filtrage applicatif contre les injections SQL, XSS et failles OWASP Top 10.
+* **SSH durci :** Authentification par clé uniquement, port non standard, accès root désactivé.
 
-Détail des règles : [`docs/04-hardening.md`](docs/04-hardening.md).
+Détail des règles de durcissement : [docs/04-hardening.md](docs/04-hardening.md).
+
+---
 
 ## Sauvegarde et observabilité
 
-- **Sauvegarde** : règle 3-2-1-1-0 (3 copies, 2 supports, 1 hors site, 1 immuable, 0 erreur après test), via Proxmox Backup Server ou Borgbackup/Restic selon arbitrage documenté.
-- **Supervision** : Prometheus + Grafana + Alertmanager pour les métriques et alertes, logs centralisés.
+* **Sauvegarde :** Règle 3-2-1-1-0 (3 copies, 2 supports, 1 hors site, 1 immuable, 0 erreur après test), via Proxmox Backup Server ou Borgbackup/Restic selon l'arbitrage documenté.
+* **Supervision :** Prometheus + Grafana + Alertmanager pour les métriques et alertes, logs centralisés.
+
+---
 
 ## Limites connues
 
 Cette infrastructure applique les principes de production, mais reste un projet personnel — les limites suivantes sont assumées et documentées plutôt que masquées :
 
-- **Single point of failure physique** : un seul serveur, aucune haute disponibilité réelle (pas de second nœud Proxmox, pas de cluster, pas de stockage partagé type Ceph).
-- **Pas de vraie redondance géographique** au-delà de la copie de sauvegarde hors site.
+* **Single point of failure physique :** Un seul serveur, aucune haute disponibilité réelle (pas de second nœud Proxmox, pas de cluster, pas de stockage partagé type Ceph).
+* **Pas de redondance géographique :** En dehors de la copie de sauvegarde hors site.
 
 Ces écarts avec une architecture pleinement HA sont volontairement documentés : ils indiquent précisément ce qu'il faudrait ajouter à l'échelle d'une vraie production (second nœud physique, cluster, stockage partagé).
 
+---
+
 ## Documentation complète
 
-- [`docs/01-architecture.md`](docs/01-architecture.md)
-- [`docs/02-reseau-vlan.md`](docs/02-reseau-vlan.md)
-- [`docs/03-pfsense.md`](docs/03-pfsense.md)
-- [`docs/04-hardening.md`](docs/04-hardening.md)
-- [`docs/05-erp-openconcerto.md`](docs/05-erp-openconcerto.md)
-- [`docs/06-adr-migration-ovh.md`](docs/06-adr-migration-ovh.md) — pourquoi ce projet succède à la version lab (8 Go RAM) et ce qui a changé
+* [docs/01-architecture.md](docs/01-architecture.md)
+* [docs/02-reseau-vlan.md](docs/02-reseau-vlan.md)
+* [docs/03-pfsense.md](docs/03-pfsense.md)
+* [docs/04-hardening.md](docs/04-hardening.md)
+* [docs/05-erp-openconcerto.md](docs/05-erp-openconcerto.md)
+* [docs/06-adr-migration-ovh.md](docs/06-adr-migration-ovh.md) — pourquoi ce projet succède à la version lab (8 Go RAM) et ce qui a changé.
+
+---
 
 ## Stack technique
 
-- Proxmox VE 9 (hyperviseur)
-- pfSense (firewall, Routed Bridge)
-- Nginx (reverse proxy, WAF)
-- Apache + PHP (serveur web)
-- MariaDB (base de données)
-- OpenConcerto (ERP)
-- nftables, Fail2ban, OpenSSH durci
-- Prometheus, Grafana (supervision)
-- Proxmox Backup Server / Borgbackup (sauvegarde)
+* **Hyperviseur :** Proxmox VE 9
+* **Réseau & Sécurité :** pfSense (Routed Bridge, Unbound DNS, WireGuard)
+* **Reverse Proxy & WAF :** Traefik, Coraza WAF, CrowdSec
+* **Web & Data :** Apache, PHP, MariaDB, OpenConcerto
+* **Système :** Debian, nftables, OpenSSH durci
+* **Supervision & Sauvegarde :** Prometheus, Grafana, Proxmox Backup Server / Borgbackup
+
+---
 
 ## Roadmap
 
-- [ ] VPN site-à-site vers une seconde machine (Windows Server / Active Directory)
-- [ ] Automatisation de la configuration (Ansible)
-- [ ] Provisioning des ressources OVH via Terraform
-- [ ] Tests de restauration de sauvegarde documentés
+* [ ] VPN site-à-site vers une seconde machine (Windows Server / Active Directory)
+* [ ] Automatisation de la configuration (Ansible)
+* [ ] Provisioning des ressources OVH via Terraform
+* [ ] Tests de restauration de sauvegarde documentés
+
+---
+
+## Auteur & Contact
+
+* **GitHub :** [@ton-pseudo](https://github.com/ton-pseudo)
+* **LinkedIn :** [Ton Prénom Nom](https://www.linkedin.com/in/ton-profil)
+* **Projet :** Conçu et documenté dans le cadre de mon portfolio technique Systems & Networks.

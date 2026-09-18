@@ -20,24 +20,43 @@ Infrastructure auto-hébergée sur un serveur dédié OVHCloud, conçue selon le
 ## Vue d'ensemble
 
 ```
-Internet (IP failover OVH)
-        │
-        ▼
-┌──────────────┐
-│   pfSense    │  Routed Bridge — frontal réseau, seul point d'entrée
-└──────┬───────┘
-       │
-┌──────▼──────────────────────────────────────────────────┐
-│  Proxmox VE — serveur dédié OVH                          │
-│                                                            │
-│  ┌────────┐   ┌────────┐   ┌────────┐   ┌────────┐        │
-│  │  DMZ   │   │  APP   │   │  DATA  │   │  MGMT  │        │
-│  │ Reverse│   │ Web    │   │ MariaDB│   │ Backup │        │
-│  │ proxy  │   │(Apache)│   │        │   │Monitor.│        │
-│  │ + WAF  │   │        │   │        │   │        │        │
-│  └────────┘   └────────┘   └────────┘   └────────┘        │
-└────────────────────────────────────────────────────────────┘
-```
+```mermaid
+graph TD
+    Internet[Internet / IP Additionnelle OVH] -->|vMAC OVH| VMBR0[vmbr0 - Bridge WAN L2]
+
+    subgraph Proxmox [Hôte Proxmox VE]
+        VMBR0 -->|WAN| PFSENSE[VM pfSense]
+        PFSENSE -->|LAN / 10.10.0.1| VMBR1[vmbr1 - Bridge LAN - inet manual]
+
+        subgraph Network_Segmentation [Réseau Interne & Segmented VLANs]
+            VMBR1 --> VLAN10[VLAN 10 - DMZ]
+            VMBR1 --> VLAN20[VLAN 20 - APP]
+            VMBR1 --> VLAN30[VLAN 30 - DATA]
+            VMBR1 --> VLAN40[VLAN 40 - MGMT]
+
+            VLAN10 --> DMZ_Stack[Traefik / CrowdSec / WAF]
+            VLAN20 --> APP_Stack[Serveurs Web / Apache / Node]
+            VLAN30 --> DATA_Stack[Bases de données / MariaDB]
+            VLAN40 --> MGMT_Stack[Monitoring / Backup / PBS]
+        end
+    end
+
+    classDef host fill:#2b2b2b,stroke:#4caf50,stroke-width:2px,color:#fff;
+    classDef router fill:#003366,stroke:#0066cc,stroke-width:2px,color:#fff;
+    class Proxmox host;
+    class PFSENSE router;
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Infrastructure physique
 

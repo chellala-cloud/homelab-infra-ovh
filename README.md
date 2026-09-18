@@ -155,5 +155,5 @@ Ces écarts avec une architecture pleinement HA sont volontairement documentés 
 ## Auteur & Contact
 
 * **GitHub :** (https://github.com/chellala-cloud)
-* **LinkedIn :** [Ton Prénom Nom](https://www.linkedin.com/in/ton-profil)
+* **LinkedIn :** (https://www.linkedin.com/in/amina-hamza33)
 * **Projet :** Conçu et documenté dans le cadre de mon portfolio technique Systems & Networks.

@@ -1,83 +1,112 @@
-# Installer Proxmox VE sur serveur dédié OVH — guide
+# Guide d'installation de Proxmox VE sur serveur dédié OVHcloud
 
-## Contexte du serveur
+Ce guide détaille l'installation initiale de l'hyperviseur Proxmox VE 9 via le template officiel OVHcloud, avec un accès d'administration sécurisé par tunnel SSH (bootstrap) pour garantir une IP principale 100 % étanche.
+
+## 1. Contexte matériel & Spécifications
 
 | Élément | Valeur |
 |---|---|
-| Fournisseur | OVHCloud, serveur dédié |
+| Fournisseur | OVHcloud, serveur dédié |
 | CPU | Intel Xeon E3-1230v6 — 4c/8t — 3.5/3.9 GHz |
 | RAM | 32 Go ECC 2133 MHz |
 | Disques | 2×2 To HDD SATA |
+| OS / Hyperviseur | Proxmox VE 9 (Template officiel OVHcloud) |
 
-## Installation via template officiel OVHcloud
+## 2. Lancement de l'installation (Manager OVHcloud)
 
-Plus simple et fiable qu'une installation manuelle par IPMI/ISO.
+**Chemin** : Bare Metal Cloud → Serveurs dédiés → [Ton Serveur] → Installer → Lancer une réinstallation à partir d'un template OVHcloud → Type d'OS : Virtualisation → Linux → Proxmox Virtual Environment 9.
 
-**Chemin dans le Manager** : Bare Metal Cloud → serveur → Installation à partir d'un template OVHcloud → Type de l'OS : **Virtualisation** → Linux → **Proxmox Virtual Environment 9**.
+### Étape 1/4 — OS et stockage
 
-## Étape 1/4 — OS et stockage
+- **Grappe de disques** : Affichée comme `2 X Disk SATA 2000 GB, JBOD` dans le menu déroulant (libellé générique OVH).
+- **Vérification du schéma de partitionnement** :
 
-**Grappe de disques cible** : affichée comme "2 X Disk SATA 2000 GB, JBOD" dans le menu déroulant, mais c'est trompeur — vérifier via le tableau de partitionnement détaillé :
-
-| Partition | FS | Point de montage | RAID | Taille exploitable | Espace consommé |
+| Partition | Type / FS | Point de montage | RAID | Taille exploitable | Espace consommé |
 |---|---|---|---|---|---|
-| 1 | ext4 | /boot | 1 | 1.0 Gio | 2.0 Gio |
-| 2 | ext4 | / | 1 | 20.0 Gio | 40.0 Gio |
-| 3 | swap | swap | - | 2×1.0 Gio | 2.0 Gio |
-| 4 | zfs | /var/lib/vz | 1 | 1.8 Tio | 3.6 Tio |
+| 1 | ext4 | /boot | 1 | 1,0 Gio | 2,0 Gio |
+| 2 | ext4 | / | 1 | 20,0 Gio | 40,0 Gio |
+| 3 | swap | swap | - | 2×1,0 Gio | 2,0 Gio |
+| 4 | zfs | /var/lib/vz | 1 | 1,8 Tio | 3,6 Tio |
 
-**Conclusion** : RAID 1 (miroir) bien appliqué automatiquement par le template OVH, malgré le libellé "JBOD" du menu. La colonne `Raid=1` et le ratio 2x entre espace consommé et exploitable le confirment. Case "hardware RAID" grisée car pas de carte RAID physique — RAID logiciel géré via ZFS/LVM au niveau des partitions. Aucune personnalisation nécessaire.
+**Validation** : Le RAID 1 (miroir) est bien appliqué automatiquement par le template OVH (confirmé par la colonne `Raid=1` et le ratio 2× entre l'espace consommé et l'espace exploitable). La case "Hardware RAID" reste grisée, ce qui est normal (RAID logiciel ZFS/LVM). Aucune modification manuelle n'est nécessaire.
 
-## Étape 2/4 — Réseau, hostname, accès
+### Étape 2/4 — Réseau, hostname et accès
 
-- **Hostname** : `proxmox-ovh` — éviter les noms génériques
-- **Authentification** : clé SSH publique fournie (pas de mot de passe root) — cohérent avec le hardening SSH prévu (`PermitRootLogin no`, auth par clé uniquement)
-- **Cloud-init Config Drive Metadata** : laissé vide — utile seulement pour du provisioning automatisé de VM plus tard (Ansible/Terraform, en roadmap), pas nécessaire pour l'hyperviseur lui-même
-- **LACP** : désactivé — le serveur n'a qu'une interface réseau active, pas de bénéfice à l'agrégation ici
+- **Hostname** : `proxmox-ovh` (éviter les noms génériques)
+- **Authentification** : Sélectionner ta clé SSH publique (aucun mot de passe root au déploiement)
+- **Cloud-init Config Drive Metadata** : Laisser vide (servira ultérieurement pour le provisioning des VMs via Ansible/Terraform)
+- **LACP** : Désactivé (le serveur dispose d'une seule interface réseau active)
 
-## Vérifications après installation
+## 3. Sécurisation de l'IP principale & Bootstrap (Tunnel SSH)
+
+L'interface de gestion de Proxmox (port 8006) ne doit jamais être exposée directement sur l'IP publique.
+
+### A. Configuration du pare-feu OVH (Edge Network Firewall)
+
+Sur l'IP principale de ton serveur dédié :
+
+- **Règle 0 (Autoriser)** : Protocole TCP, IP Source `TON_IP_PUBLIQUE/32`, Port destination `22` (SSH)
+- **Règle 1 (Refuser)** : Refuser tout le reste (DROP)
+- Activer le pare-feu
+
+
+### B. Établissement du tunnel SSH depuis ton poste local
+
+Pour accéder à l'IHM web Proxmox de façon sécurisée, encapsule le trafic Web dans le tunnel SSH :
 
 ```bash
-ssh root@5.135.138.58
-
-pveversion          # version Proxmox installée
-free -h              # RAM vue par le système
-nproc                # CPU vus par le système
-zpool status          # état du RAID/ZFS
+ssh -L 8006:127.0.0.1:8006 root@<IP_PRINCIPALE_OVH>
 ```
 
-`zpool status` doit afficher `state: ONLINE`, un `mirror-0` avec les deux disques `ONLINE`, `READ WRITE CKSUM` à `0 0 0` — confirmation finale du RAID 1 réel, au-delà du tableau affiché par l'installeur OVH.
+### C. Vérifications système initiales (en CLI)
 
-## Mot de passe root pour l'interface graphique
+Dans la session SSH ouverte, valide l'état du système :
 
-L'auth par clé couvre SSH, pas l'interface web `:8006` — deux mécanismes séparés :
+```bash
+pveversion          # Vérifier la version de Proxmox
+free -h              # Valider la RAM disponible
+nproc                # Valider le nombre de vCPUs
+zpool status         # Confirmer l'état du ZFS
+```
+
+**Vérification RAID ZFS** : la commande `zpool status` doit afficher `state: ONLINE` avec un `mirror-0` regroupant les deux disques en état `ONLINE` sans erreur (`READ WRITE CKSUM` à `0 0 0`).
+
+## 4. Définition du mot de passe root pour l'IHM Web
+
+L'authentification par clé SSH ne permet pas de se connecter directement à l'IHM Web (`:8006`). Il faut définir un mot de passe pour l'utilisateur root :
+
 ```bash
 passwd
 ```
 
-## Première étape de l'infra : créer vmbr1
+## 5. Configuration de l'interface réseau interne (vmbr1)
 
-Via l'interface web (plus sûr que l'édition manuelle du fichier réseau) :
+L'IHM de Proxmox est désormais accessible de manière sécurisée sur ton navigateur à l'adresse `https://localhost:8006` (via le tunnel SSH).
 
-1. Interface Proxmox `:8006` → clique sur ton nœud (le nom du serveur) dans le menu de gauche
-2. **Système → Réseau**
-3. Bouton **"Créer" → "Linux Bridge"**
-4. Remplis :
+### Création du bridge virtuel (vmbr1)
+
+1. Dans l'IHM Proxmox, sélectionner le nœud `proxmox-ovh` dans le menu de gauche
+2. Naviguer vers **Système → Réseau**
+3. Cliquer sur **Créer → Linux Bridge** et renseigner les champs suivants :
    - **Name** : `vmbr1`
-   - **IPv4/CIDR** : laisse vide — ce bridge n'a pas besoin d'IP côté Proxmox, c'est pfSense qui sera le seul à porter une IP dessus (`10.10.x.1`)
-   - **Bridge ports** : laisse vide — c'est ce qui en fait un bridge purement interne, sans carte physique attachée
-   - **VLAN aware** : coche cette case — indispensable pour que les VLAN (DMZ/APP/DATA/MGMT) puissent transiter dessus
-5. Clique **"Créer"**, puis en haut de la page réseau, un bouton **"Apply Configuration"** apparaît — clique dessus pour appliquer sans reboot complet du serveur
+   - **IPv4/CIDR** : (laisser vide — Proxmox ne porte pas d'IP sur ce bridge)
+   - **Bridge ports** : (laisser vide — bridge purement virtuel, non rattaché à une carte physique)
+   - **VLAN aware** : coché (indispensable pour le trunk VLANs 10/20/30/40 de pfSense)
+4. Cliquer sur **Créer**
+5. Cliquer sur **Apply Configuration** en haut de la page pour appliquer la modification à chaud
 
-Vérification que le bridge est bien actif (pas juste créé dans l'UI) :
+### Validation en CLI
+
+Vérifier que le bridge est bien actif en session SSH :
+
 ```bash
 ip a | grep vmbr1
 ```
 
-Ne jamais toucher à `vmbr0` pendant cette manip — il porte l'IP principale, donc l'accès SSH/web actuel.
+**Avertissement** : ne jamais modifier ou supprimer `vmbr0`. Il est rattaché à la carte réseau physique et porte l'IP principale du serveur dédié.
 
-## Pièges à ne jamais refaire
+## Pièges évités & Rappels
 
-- Ne pas se fier au libellé "JBOD" du menu déroulant → toujours vérifier le tableau de partitionnement détaillé et/ou `zpool status`
-- Toujours cliquer "Apply Configuration" après une création/modif réseau, sinon la config reste inactive malgré son apparence dans l'UI
-- Le mot de passe root (`passwd`) est nécessaire pour l'interface web même en étant déjà authentifié par clé SSH côté serveur
+- **Faux affichage JBOD** : ne pas se fier au libellé du menu déroulant OVH. Toujours valider la présence du RAID 1 via le tableau de partitionnement et la commande `zpool status`.
+- **Étanchéité du port 8006** : l'IHM Web Proxmox ne doit être joignable qu'au travers de `https://localhost:8006` via le tunnel SSH en phase de bootstrap, puis via `https://10.10.40.254:8006` après la mise en place du VPN WireGuard sur le VLAN 40 (MGMT).
+- **Application du réseau** : la création d'un bridge dans l'IHM Proxmox reste inactive tant que le bouton "Apply Configuration" n'a pas été cliqué.

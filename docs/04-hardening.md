@@ -55,19 +55,23 @@ Ce pare-feu ne suit pas les connexions : la règle `established` (la première) 
 
 ### Firewall OVH — sur l'IP failover de pfSense
 
-**À faire, au moment de la bascule du WAN de pfSense sur l'IP failover.**
+**Fait.**
 
 Le pare-feu d'OVH est propre à chaque IP : les règles de l'IP principale ne protègent pas l'IP failover. Il faut lui créer les siennes.
 
 | Ordre | Action | Protocole | IP source | Port source | Port destination | État TCP |
 |---|---|---|---|---|---|---|
 | 1 | Autoriser | TCP | tous | - | - | established |
-| 2 | Autoriser | UDP | tous | - | `PORT-WG` | - |
-| 3 | Autoriser | TCP | tous | 53 | - | - |
-| 4 | Autoriser | UDP | tous | 53 | - | - |
+| 2 | Autoriser | TCP | tous | 53 | - | - |
+| 3 | Autoriser | UDP | tous | 53 | - | - |
+| 4 | Autoriser | UDP | tous | 123 | - | - |
 | 5 | Refuser | IPv4 | tous | - | - | - |
 
-Mêmes règles pour les réponses DNS que sur l'IP principale, puisque pfSense sort par cette IP. Seul le port UDP de WireGuard est ouvert à tout Internet. À tester après l'activation : résolution DNS, mise à jour et heure de pfSense.
+pfSense sort par cette IP : les mêmes règles DNS que sur l'IP principale s'appliquent, plus une règle pour les réponses NTP (UDP, port source 123), car pfSense synchronise son heure auprès de serveurs extérieurs.
+
+**Vérifié après l'activation** : résolution DNS, synchronisation de l'heure, mises à jour de pfSense et passerelle en ligne.
+
+**À ajouter avec le VPN** : une règle qui autorise le port UDP de WireGuard (`PORT-WG`, en destination), placée avant le refus de l'IPv4. Ce sera le seul port ouvert à tout Internet.
 
 ## SSH — couper la connexion par mot de passe
 
@@ -258,7 +262,7 @@ Protège même si le mot de passe web fuite un jour.
 | Mot de passe admin changé | Fait |
 | GUI en HTTPS (port 443), accessible depuis le LAN uniquement, par le tunnel SSH | Fait |
 | SSH de pfSense désactivé (ou par clé uniquement, jamais sur le WAN) | À vérifier : désactivé par défaut, à confirmer dans System → Advanced → Admin Access → Secure Shell |
-| Règles du WAN : rien d'ouvert sauf le port UDP de WireGuard | À faire, avec la bascule sur l'IP failover |
+| Règles du WAN : rien d'ouvert sauf le port UDP de WireGuard | Rien d'ouvert pour l'instant ; le port de WireGuard sera ajouté avec le VPN |
 
 La GUI n'écoute que sur le LAN privé : aucune route d'Internet n'y mène. Je n'y accède que par le tunnel SSH.
 
@@ -298,7 +302,7 @@ Le firewall OVH bloque déjà tout sauf mon IP. Donc les mesures suivantes ne so
 1. **Couper la connexion SSH par mot de passe et interdire `root`** — fait — utile si jamais quelqu'un réussit à se faire passer pour mon IP, ou si j'élargis la règle un jour
 2. **Double authentification sur l'interface web Proxmox** — fait — la seule mesure ici qui protège contre un problème qui n'a rien à voir avec le réseau (mot de passe volé par phishing par exemple)
 3. **Limites SSH et clé de tunnel restreinte** — fait — limitent ce qu'une clé volée ou un accès de tous les jours peut atteindre
-4. **Basculer le WAN de pfSense sur l'IP failover** — à faire — prérequis du VPN, et supprime le sas temporaire
+4. **Basculer le WAN de pfSense sur l'IP failover** — fait — prérequis du VPN ; le sas temporaire est retiré après le VPN
 5. **VPN WireGuard sur pfSense** — à faire — accès par clé, indépendant de mon IP
 6. **Fail2ban** — à faire après le VPN — pas très utile tant que seule mon IP peut atteindre le serveur
 7. **nftables sur le serveur lui-même** — à faire après le VPN — règle par interface, pas par IP
@@ -306,9 +310,9 @@ Le firewall OVH bloque déjà tout sauf mon IP. Donc les mesures suivantes ne so
 
 ## VPN WireGuard sur pfSense
 
-**À faire, après la bascule sur l'IP failover.**
+**À faire.** La bascule sur l'IP failover est faite.
 
-Pour que le VPN soit joignable depuis Internet, pfSense doit avoir une adresse publique : son WAN passe donc d'abord sur l'IP failover. Pas de redirection de port (DNAT) sur l'hôte : elle obligerait à ouvrir un port UDP à tout Internet sur l'IP principale, celle que je protège pour ne laisser passer que mon IP, et elle serait jetée à la bascule.
+Pour que le VPN soit joignable depuis Internet, pfSense doit avoir une adresse publique : son WAN est donc passé sur l'IP failover. Pas de redirection de port (DNAT) sur l'hôte : elle obligerait à ouvrir un port UDP à tout Internet sur l'IP principale, celle que je protège pour ne laisser passer que mon IP, et elle serait jetée à la bascule.
 
 - Le port UDP de WireGuard est ouvert dans le pare-feu OVH de l'IP failover (voir plus haut) et dans les règles du WAN de pfSense. Rien d'autre n'est ouvert sur le WAN.
 - Une fois connecté au VPN, j'atteins la GUI de pfSense (`192.168.100.1`) et celle de Proxmox (`192.168.100.2:8006`) directement sur le LAN.

@@ -49,13 +49,13 @@ graph TD
 | :--- | :--- |
 | Serveur Proxmox installé et accès sécurisé (pare-feu OVH, SSH par clé, double authentification) | Fait |
 | pfSense installé et accessible par tunnel SSH, sur un réseau d'installation temporaire | Fait |
-| Bascule du WAN de pfSense sur l'IP Additional (vMAC OVH) | À faire |
+| Bascule du WAN de pfSense sur l'IP Additional (vMAC OVH), avec son pare-feu OVH | Fait |
 | VPN WireGuard | À faire |
 | VLAN, reverse proxy, WAF, CrowdSec | À faire |
 | Application hébergée | À choisir |
 | Sauvegarde et supervision | À faire |
 
-pfSense a besoin d'Internet pour s'installer, alors que l'IP Additional d'OVH n'a pas d'accès direct à la passerelle. Je l'installe donc d'abord derrière un **sas NAT temporaire** sur l'hôte, puis je bascule son WAN sur l'IP Additional. Le raisonnement et les incidents sont dans [docs/03-pfsense.md](docs/03-pfsense.md).
+pfSense a besoin d'Internet pour s'installer, alors que l'IP Additional d'OVH n'a pas d'accès direct à la passerelle. Je l'ai donc installé d'abord derrière un **sas NAT temporaire** sur l'hôte, puis j'ai basculé son WAN sur l'IP Additional. Le sas sera retiré une fois le VPN en place. Le raisonnement et les incidents sont dans [docs/03-pfsense.md](docs/03-pfsense.md).
 
 ---
 
@@ -167,7 +167,7 @@ Ces écarts avec une architecture pleinement HA sont volontairement documentés 
 
 ## Roadmap
 
-* [ ] Bascule du WAN de pfSense sur l'IP Additional et VPN WireGuard
+* [ ] VPN WireGuard sur pfSense, puis retrait du sas NAT temporaire
 * [ ] Choix et déploiement de l'application hébergée (VLAN APP et DATA)
 * [ ] VPN site-à-site vers une seconde machine (Windows Server / Active Directory)
 * [ ] Automatisation de la configuration (Ansible)

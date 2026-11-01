@@ -1,6 +1,6 @@
 # pfSense — installation, accès à la GUI et bascule sur l'IP failover
 
-**En cours.** pfSense est installé, accessible, et son WAN est sur l'IP failover. Il reste le VPN, le retrait du sas et les VLAN.
+**En cours.** pfSense est installé, accessible, et son WAN est sur l'IP failover. Le VPN WireGuard fonctionne. Il reste le retrait du sas et les VLAN.
 
 Cette page résume ce que j'ai fait, pourquoi je l'ai fait comme ça, et ce qui s'est mal passé. Toutes les commandes sont dans le [pas-à-pas complet](03-pfsense-pas-a-pas.md). La sécurité de l'accès (tunnel SSH, clés, pare-feu OVH) est dans [04-hardening.md](04-hardening.md).
 
@@ -17,8 +17,8 @@ Cette page résume ce que j'ai fait, pourquoi je l'ai fait comme ça, et ce qui 
 | Instantané `apres-install` de la VM | Fait |
 | Bascule du WAN sur l'IP failover (MAC virtuelle, `/32`, passerelle non locale) | Fait |
 | Pare-feu OVH de l'IP failover | Fait |
-| Retrait du sas `vmbr100` | À faire, après le VPN |
-| VPN WireGuard | À faire |
+| Retrait du sas `vmbr100` | À faire |
+| VPN WireGuard (détails dans [04-hardening.md](04-hardening.md)) | Fait |
 | VLAN (DMZ, APP, DATA, MGMT) | À faire |
 
 ## Le problème : installer pfSense avec une IP failover
@@ -80,7 +80,7 @@ Deux trajets, deux rôles pour l'hôte :
 
 **Message à la prise de l'instantané.** `skipping guest filesystem freeze - disabled in VM options` : l'agent invité QEMU n'est pas activé, donc le système de fichiers n'est pas gelé avant l'instantané. Sans conséquence sur une installation neuve ; l'instantané reste utilisable pour un retour en arrière.
 
-**Passerelle `Offline (packet loss)` après la bascule.** Juste après avoir configuré le WAN en `/32`, **Status → Gateways** affichait `OVH_GW` en `Offline (packet loss)`, alors que la passerelle répondait au ping. Je ne me suis pas fié à ce statut : j'ai vérifié la sortie par un ping direct vers `8.8.8.8` depuis le WAN, puis le DNS, l'heure et les mises à jour de pfSense.
+**Passerelle `Offline (packet loss)` après la bascule.** Juste après avoir configuré le WAN en `/32`, **Status → Gateways** affichait `OVH_GW` en `Offline (packet loss)`, alors que la passerelle répondait au ping. La cause : des changements n'avaient pas été appliqués (**Apply Changes**), donc le statut n'était pas à jour. Je ne me suis pas fié à ce seul statut : j'ai vérifié la sortie par un ping direct vers `8.8.8.8` depuis le WAN, puis le DNS, l'heure et les mises à jour de pfSense. Je clique désormais sur **Apply Changes** après chaque modification de passerelle ou d'interface.
 
 ## Accéder à la GUI
 
@@ -94,7 +94,7 @@ Si pfSense affiche *Potential DNS Rebind attack detected*, j'ajoute `localhost` 
 
 ## Bascule sur l'IP failover
 
-**Fait**, sauf le retrait du sas, que je garde jusqu'à ce que le VPN fonctionne. Une fois pfSense installé, il n'a plus besoin du sas pour fonctionner en `/32`. J'ai suivi cet ordre, pour ne jamais perdre l'accès à pfSense pendant la transition :
+**Fait**, sauf le retrait du sas, qui reste à faire. Une fois pfSense installé, il n'a plus besoin du sas pour fonctionner en `/32`. J'ai suivi cet ordre, pour ne jamais perdre l'accès à pfSense pendant la transition :
 
 1. Instantané de la VM (`qm snapshot 100 avant-bascule`).
 2. VM arrêtée, interface WAN passée sur `vmbr0` avec la MAC virtuelle d'OVH (`qm set 100 --net0 virtio=<MAC>,bridge=vmbr0`), puis redémarrée. Le LAN reste sur `vmbr101` : mon tunnel vers la GUI n'est pas coupé.
@@ -102,12 +102,12 @@ Si pfSense affiche *Potential DNS Rebind attack detected*, j'ajoute `localhost` 
 4. **Block private networks** et **Block bogon networks** remis sur le WAN.
 5. Sortie Internet vérifiée : ping vers `8.8.8.8` depuis le WAN, DNS, heure (NTP) et mises à jour de pfSense.
 6. Règles du pare-feu OVH de l'IP failover créées, puis activées (voir [04-hardening.md](04-hardening.md)), puis mêmes vérifications.
-7. À faire : VPN WireGuard et test depuis l'extérieur, puis retrait du sas (bloc `vmbr100`, lignes `post-up` et `post-down`, table `nat_pfsense`). Je garde `vmbr101`, le LAN des futures VM.
+7. VPN WireGuard installé et testé (voir [04-hardening.md](04-hardening.md)). À faire : retrait du sas (bloc `vmbr100`, lignes `post-up` et `post-down`, table `nat_pfsense`). Je garde `vmbr101`, le LAN des futures VM.
 
 Le double NAT a disparu avec la bascule : les VM sortiront par pfSense avec l'IP failover.
 
 ## Ce qu'il reste à faire
 
-- Le VPN WireGuard et le retrait du sas (WireGuard utilise l'UDP : le port est ouvert uniquement sur l'IP failover).
+- Le retrait du sas.
 - Les VLAN : DMZ, APP, DATA, MGMT.
 - Vérifier que le SSH de pfSense est désactivé, et qu'aucune règle du WAN n'ouvre autre chose que le port de WireGuard.

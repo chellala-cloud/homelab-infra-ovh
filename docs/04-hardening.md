@@ -24,7 +24,7 @@ Chaque mesure bloque un type de problème différent. Aucune ne remplace les aut
 | SSH avec l'utilisateur d'administration (clé avec shell) | PC → port 22 | règle OVH sur mon IP | administration en ligne de commande |
 | Tunnel SSH (clé dédiée) | PC → port 22 → GUI pfSense et GUI Proxmox | règle OVH sur mon IP | accès aux interfaces web |
 | GUI Proxmox directe | `IP-DU-SERVEUR:8006` | règle OVH sur mon IP + TOTP | dernier recours |
-| VPN WireGuard (à faire) | PC → IP failover (UDP) → LAN | VM pfSense en marche | accès aux interfaces web, sans dépendre de mon IP |
+| VPN WireGuard | PC → IP failover (UDP) → LAN | VM pfSense en marche | accès aux interfaces web, sans dépendre de mon IP |
 | KVM/IPMI et rescue OVH | manager OVH | compte OVH uniquement | secours quand le SSH ne passe plus |
 
 Le KVM ne dépend ni du réseau du serveur, ni de pfSense, ni du SSH : c'est la dernière porte.
@@ -49,9 +49,9 @@ Ce pare-feu ne suit pas les connexions : la règle `established` (la première) 
 
 **Vérifié** : `apt update`, la résolution DNS et la synchronisation de l'heure fonctionnent. Il n'y a pas de règle pour les réponses NTP (UDP, port source 123) : si l'heure cesse de se synchroniser, en ajouter une avant la règle de refus.
 
-**Problème connu** : mon IP à la maison change de temps en temps (elle n'est pas fixe). Quand ça arrive, la règle devient fausse et je perds l'accès au serveur. Solution prévue : un VPN sur pfSense, qui vérifie une clé au lieu de vérifier une IP — plus besoin de mettre à jour cette règle à chaque changement.
+**Problème connu** : mon IP à la maison change de temps en temps (elle n'est pas fixe). Quand ça arrive, la règle devient fausse et je perds l'accès au serveur. Solution : le VPN WireGuard sur pfSense (voir plus bas), qui vérifie une clé au lieu de vérifier une IP. Il me sert d'accès de repli quand mon IP change ; les règles sur mon IP restent à corriger à la main pour le SSH et le port 8006 directs.
 
-**Ce qui s'est passé** : mon IP a changé, ça m'a coupé l'accès SSH et web. J'ai réglé le problème en récupérant ma nouvelle IP (`curl -4 ifconfig.me`) et en corrigeant les règles à la main. J'ai pensé à automatiser ça avec un script qui met à jour la règle tout seul, mais j'ai préféré ne pas m'éparpiller — le VPN va rendre ce script inutile de toute façon. Peut-être à faire plus tard, mais pas maintenant.
+**Ce qui s'est passé** : mon IP a changé, ça m'a coupé l'accès SSH et web. J'ai réglé le problème en récupérant ma nouvelle IP (`curl -4 ifconfig.me`) et en corrigeant les règles à la main. J'ai pensé à automatiser ça avec un script qui met à jour la règle tout seul, mais j'ai préféré ne pas m'éparpiller — le VPN rend ce script inutile de toute façon. Peut-être à faire plus tard, mais pas maintenant.
 
 ### Firewall OVH — sur l'IP failover de pfSense
 
@@ -65,13 +65,14 @@ Le pare-feu d'OVH est propre à chaque IP : les règles de l'IP principale ne pr
 | 2 | Autoriser | TCP | tous | 53 | - | - |
 | 3 | Autoriser | UDP | tous | 53 | - | - |
 | 4 | Autoriser | UDP | tous | 123 | - | - |
-| 5 | Refuser | IPv4 | tous | - | - | - |
+| 5 | Autoriser | UDP | tous | - | `PORT-WG` | - |
+| 6 | Refuser | IPv4 | tous | - | - | - |
 
 pfSense sort par cette IP : les mêmes règles DNS que sur l'IP principale s'appliquent, plus une règle pour les réponses NTP (UDP, port source 123), car pfSense synchronise son heure auprès de serveurs extérieurs.
 
 **Vérifié après l'activation** : résolution DNS, synchronisation de l'heure, mises à jour de pfSense et passerelle en ligne.
 
-**À ajouter avec le VPN** : une règle qui autorise le port UDP de WireGuard (`PORT-WG`, en destination), placée avant le refus de l'IPv4. Ce sera le seul port ouvert à tout Internet.
+**Ajouté avec le VPN** : une règle qui autorise le port UDP de WireGuard (`PORT-WG`, en destination), placée avant le refus de l'IPv4. C'est le seul port ouvert à tout Internet.
 
 ## SSH — couper la connexion par mot de passe
 
@@ -262,7 +263,7 @@ Protège même si le mot de passe web fuite un jour.
 | Mot de passe admin changé | Fait |
 | GUI en HTTPS (port 443), accessible depuis le LAN uniquement, par le tunnel SSH | Fait |
 | SSH de pfSense désactivé (ou par clé uniquement, jamais sur le WAN) | À vérifier : désactivé par défaut, à confirmer dans System → Advanced → Admin Access → Secure Shell |
-| Règles du WAN : rien d'ouvert sauf le port UDP de WireGuard | Rien d'ouvert pour l'instant ; le port de WireGuard sera ajouté avec le VPN |
+| Règles du WAN : rien d'ouvert sauf le port UDP de WireGuard | Fait : seul le port UDP de WireGuard est ouvert |
 
 La GUI n'écoute que sur le LAN privé : aucune route d'Internet n'y mène. Je n'y accède que par le tunnel SSH.
 
@@ -274,7 +275,7 @@ Si pfSense affiche *Potential DNS Rebind attack detected* en passant par `localh
 
 Quand le SSH ne passe plus, deux accès ne dépendent pas de lui.
 
-**Si mon IP a changé** (avant le VPN) : relever la nouvelle IP depuis le PC (`curl -4 ifconfig.me`), corriger dans le manager OVH les deux règles qui autorisent mon IP (ports 22 et 8006). Le KVM n'est pas nécessaire.
+**Si mon IP a changé** : le VPN reste utilisable, car il ne dépend pas de mon IP. Pour retrouver le SSH et le port 8006 directs, je relève ma nouvelle IP depuis le PC (`curl -4 ifconfig.me`) et je corrige dans le manager OVH les deux règles qui autorisent mon IP (ports 22 et 8006). Le KVM n'est pas nécessaire.
 
 **KVM/IPMI** : console du serveur ouverte depuis le manager OVH. Elle fonctionne même si le réseau, pfSense ou le SSH sont en panne. Connexion avec le mot de passe root local (il passe par le clavier virtuel, pas par le SSH). Utile après une erreur dans la configuration `sshd` : corriger ou supprimer le fichier en cause, puis `sshd -t` et `systemctl reload ssh`. Le mot de passe root local doit rester dans un gestionnaire de mots de passe.
 
@@ -303,20 +304,90 @@ Le firewall OVH bloque déjà tout sauf mon IP. Donc les mesures suivantes ne so
 2. **Double authentification sur l'interface web Proxmox** — fait — la seule mesure ici qui protège contre un problème qui n'a rien à voir avec le réseau (mot de passe volé par phishing par exemple)
 3. **Limites SSH et clé de tunnel restreinte** — fait — limitent ce qu'une clé volée ou un accès de tous les jours peut atteindre
 4. **Basculer le WAN de pfSense sur l'IP failover** — fait — prérequis du VPN ; le sas temporaire est retiré après le VPN
-5. **VPN WireGuard sur pfSense** — à faire — accès par clé, indépendant de mon IP
+5. **VPN WireGuard sur pfSense** — fait — accès par clé, indépendant de mon IP
 6. **Fail2ban** — à faire après le VPN — pas très utile tant que seule mon IP peut atteindre le serveur
 7. **nftables sur le serveur lui-même** — à faire après le VPN — règle par interface, pas par IP
 8. **Vérifier que le SSH de pfSense est désactivé** — à faire
 
 ## VPN WireGuard sur pfSense
 
-**À faire.** La bascule sur l'IP failover est faite.
+**Fait.** La bascule sur l'IP failover est faite et le VPN fonctionne : j'atteins la GUI de pfSense, celle de Proxmox et le SSH de l'hôte par leurs adresses du LAN.
 
 Pour que le VPN soit joignable depuis Internet, pfSense doit avoir une adresse publique : son WAN est donc passé sur l'IP failover. Pas de redirection de port (DNAT) sur l'hôte : elle obligerait à ouvrir un port UDP à tout Internet sur l'IP principale, celle que je protège pour ne laisser passer que mon IP, et elle serait jetée à la bascule.
 
-- Le port UDP de WireGuard est ouvert dans le pare-feu OVH de l'IP failover (voir plus haut) et dans les règles du WAN de pfSense. Rien d'autre n'est ouvert sur le WAN.
-- Une fois connecté au VPN, j'atteins la GUI de pfSense (`192.168.100.1`) et celle de Proxmox (`192.168.100.2:8006`) directement sur le LAN.
-- Le tunnel SSH reste en secours : il ne dépend pas de pfSense.
+### Comment ça marche
+
+- Chaque côté a une **paire de clés**, et la clé publique est son identité. pfSense n'accepte un paquet que s'il est chiffré par un pair déclaré. Sans clé valide, WireGuard ne répond rien : un scan du port ne voit rien. C'est ce qui permet d'ouvrir ce port à tout Internet, et ce qui rend mon IP, qui change, sans importance.
+- Un tunnel SSH (`ssh -L`) redirige **un port vers une destination**. WireGuard relie **deux réseaux** : mon PC devient une machine du réseau privé, et j'utilise les vraies adresses du lab, sans l'alerte *DNS Rebind* de `localhost`.
+- Une clé WireGuard ne donne **aucun shell** : seulement le droit d'envoyer des paquets vers les adresses que pfSense autorise.
+
+### Configuration
+
+| Élément | Valeur |
+|---|---|
+| Réseau du VPN | `10.6.0.0/24` |
+| Tunnel de pfSense | `10.6.0.1/24`, port UDP `PORT-WG` |
+| Mon PC, seul pair déclaré | `10.6.0.2/32` (*Allowed IPs* dans pfSense) |
+| Client, `AllowedIPs` | `192.168.100.0/24` : seul le trafic vers le lab passe par le VPN |
+| Client, `PersistentKeepalive` | `25` |
+
+Le tunnel est en `/24`, mais un seul client peut s'y connecter, grâce à trois verrous : seule la clé publique de mon PC est déclarée, ses *Allowed IPs* sont `10.6.0.2/32`, et les règles de l'interface WireGuard n'acceptent que cette adresse source.
+
+### Ouvertures
+
+- **Pare-feu OVH de l'IP failover** : une règle UDP vers `PORT-WG`, avant le refus de l'IPv4 (voir plus haut).
+- **WAN de pfSense** : `Pass`, UDP, source `Any` (mon IP change : c'est la clé qui protège), destination `WAN address`, port `PORT-WG`.
+
+### Règles de l'interface WireGuard
+
+Source fixée à `10.6.0.2/32`, jamais à l'alias *WireGuard subnets*, qui couvrirait toute la plage du `/24`. Tout le reste est refusé par défaut.
+
+| Règle | Destination | Port |
+|---|---|---|
+| GUI pfSense | `192.168.100.1` | TCP 443 |
+| GUI Proxmox | `192.168.100.2` | TCP 8006 |
+| SSH de l'hôte | `192.168.100.2` | TCP 22 |
+
+### Route sur l'hôte Proxmox
+
+La route par défaut de l'hôte mène à OVH, pas à pfSense. Sans route dédiée, il répondrait à `10.6.0.2` vers Internet, et la réponse n'arriverait jamais. Pour pfSense et les futures VM, la question ne se pose pas : leur passerelle est pfSense.
+
+```bash
+sudo ip route replace 10.6.0.0/24 via 192.168.100.1 dev vmbr101
+ip route get 10.6.0.2
+```
+
+La seconde commande doit afficher `via 192.168.100.1 dev vmbr101`. Pour la rendre permanente, j'ajoute dans le bloc `vmbr101` de `/etc/network/interfaces` :
+
+```
+    post-up   ip route replace 10.6.0.0/24 via 192.168.100.1 dev vmbr101
+    post-down ip route del 10.6.0.0/24 via 192.168.100.1 dev vmbr101
+```
+
+### Le client
+
+La configuration du PC est dans `/etc/wireguard/lab.conf`, lisible par `root` seul (`chmod 600`). La clé privée n'existe que dans ce fichier ; je ne la copie nulle part, et ce dossier ne va jamais dans un dépôt.
+
+### Vérifier
+
+```bash
+sudo wg-quick up lab
+sudo wg show lab
+curl -k https://192.168.100.2:8006 | head -n 5
+curl -kI https://192.168.100.1
+```
+
+`latest handshake` doit apparaître dans `wg show`. J'utilise `curl` sans `-I` pour Proxmox : son API répond `501 method 'HEAD' not available` à une requête `HEAD`. Cette réponse prouve d'ailleurs que le trafic fait l'aller-retour complet.
+
+### Ce qui s'est passé
+
+**« The WireGuard service is not running. »** Après la création du tunnel, pfSense affichait cette bannière : la case **Enable WireGuard** de l'onglet **Settings** n'était pas cochée.
+
+**Pas de handshake au premier essai.** Le fichier du client contenait une ancienne clé privée, qui ne correspondait pas à la clé publique déclarée dans pfSense. pfSense recevait les paquets sans reconnaître l'expéditeur, et ne répondait pas. Le test qui le prouve : `sudo awk '/PrivateKey/ {print $3}' /etc/wireguard/lab.conf | wg pubkey` doit donner exactement la clé du pair dans pfSense.
+
+**Le ping était bloqué.** Les journaux montraient `Default deny rule IPv4` sur `tun_wg0` pour un ICMP de `10.6.0.2` vers `192.168.100.1` : aucune règle ne l'autorisait. Le ping n'est qu'un outil de test : j'ai validé le VPN avec les trois accès réels (GUI de pfSense, GUI de Proxmox, SSH de l'hôte).
+
+Le tunnel SSH reste en secours : il ne dépend ni de pfSense ni de WireGuard.
 
 ## Fail2ban
 

@@ -309,22 +309,58 @@ ifconfig vtnet1 -rxcsum -txcsum -tso -lro
 
 Pour le rendre permanent : **System → Advanced → Networking**, cochez *Disable hardware checksum offload*, *Disable hardware TCP segmentation offload* et *Disable hardware large receive offload*, puis redémarrez pfSense.
 
-## 12. Étape suivante : basculer sur l'IP failover
+## 12. Basculer sur l'IP failover
 
-Une fois pfSense installé, il n'a plus besoin du sas pour fonctionner en `/32`. Faites d'abord un instantané :
+**Fait.** Une fois pfSense installé, il n'a plus besoin du sas pour fonctionner en `/32`. Je garde le sas (bloc `vmbr100` et NAT de l'hôte) jusqu'à ce que le VPN fonctionne : il me permet de revenir en arrière.
+
+La bascule ne touche ni `vmbr101` ni `vmbr0` : l'accès SSH à l'hôte et le tunnel vers la GUI de pfSense restent en place. Seule la sortie Internet de pfSense est coupée quelques minutes.
+
+### 12.1 Préparer
 
 ```
 qm snapshot 100 avant-bascule
+qm listsnapshot 100
+ip route show default
 ```
 
-Puis :
+- La première commande prend l'instantané.
+- La troisième donne la passerelle d'OVH (`default via X.X.X.254 dev vmbr0`), qui est aussi celle de l'IP failover.
+- Dans le manager OVH, l'IP additionnelle doit avoir une **MAC virtuelle** (type `ovh`) : je la note.
 
-1. Créer la MAC virtuelle pour l'IP failover dans le manager OVH.
-2. Passer l'interface WAN sur `vmbr0` avec cette MAC : `qm set 100 --net0 virtio=<MAC_VIRTUELLE>,bridge=vmbr0`.
-3. Dans pfSense, mettre le WAN en IP failover avec le masque `/32` et créer la passerelle OVH. Dans **System → Routing → Gateways**, cocher *Use non-local gateway through interface specific route*.
-4. Remettre *Block private networks* et *Block bogon networks* sur le WAN.
-5. Supprimer le sas : retirer les lignes `post-up` / `post-down` et le bloc `vmbr100` de `/etc/network/interfaces`, puis `nft delete table ip nat_pfsense` et `ifreload -a`.
-6. Conserver `vmbr101` : c'est le LAN derrière lequel seront branchées les futures VM.
+### 12.2 Brancher le WAN sur `vmbr0` avec la MAC virtuelle
+
+```
+qm shutdown 100
+qm set 100 --net0 virtio=<MAC_VIRTUELLE>,bridge=vmbr0
+qm config 100 | grep net
+qm start 100
+```
+
+`net0` doit être sur `vmbr0` avec la MAC d'OVH, et `net1` toujours sur `vmbr101`. Pas de `firewall=1` sur cette interface. Une fois la VM redémarrée, je rouvre la GUI par le tunnel : **Status → Interfaces** doit afficher la MAC virtuelle sur le WAN. Il est normal que pfSense n'ait plus de sortie Internet à ce stade, son WAN étant encore en `10.0.0.2`.
+
+### 12.3 Configurer le WAN dans la GUI
+
+La console ne permet pas cette configuration : elle refuse une passerelle située hors du sous-réseau de l'interface, ce qui est le cas d'une IP failover en `/32`.
+
+1. **System → Routing → Gateways → Add** : interface `WAN`, famille `IPv4`, nom `OVH_GW`, adresse `<PASSERELLE_OVH>`, option **Use non-local gateway through interface specific route** cochée.
+2. **Interfaces → WAN** : type `Static IPv4`, adresse `<IP_FAILOVER>` avec le masque `/32`, passerelle amont `OVH_GW`. Dans *Reserved Networks*, cocher **Block private networks and loopback addresses** et **Block bogon networks** : elles ne servaient pas pendant le sas, car le WAN était privé, et elles sont justifiées maintenant qu'il est public.
+3. **System → Routing → Gateways** : passerelle par défaut IPv4 = `OVH_GW`, puis suppression de l'ancienne passerelle `10.0.0.1`.
+
+### 12.4 Vérifier
+
+- **Status → Gateways** : `OVH_GW` en ligne. Juste après la configuration, le statut a affiché `Offline (packet loss)` alors que la passerelle répondait au ping : des changements n'avaient pas été appliqués. Après chaque modification de passerelle ou d'interface, cliquer sur **Apply Changes** et attendre une trentaine de secondes avant de lire le statut.
+- **Diagnostics → Ping** : `8.8.8.8` depuis l'interface `WAN`.
+- **Diagnostics → DNS Lookup** : résoudre `debian.org`.
+- **Status → NTP** : synchronisation active.
+- **System → Update** : la page se charge sans erreur.
+
+### 12.5 Pare-feu OVH de l'IP failover
+
+Il est propre à chaque IP : les règles de l'IP principale ne protègent pas l'IP failover. Les règles à créer, puis activer en dernier, sont dans [04-hardening.md](04-hardening.md). Après l'activation, je refais les vérifications de l'étape 12.4.
+
+### 12.6 À faire après le VPN
+
+Retirer le sas : supprimer les lignes `post-up` / `post-down` et le bloc `vmbr100` de `/etc/network/interfaces`, puis `nft delete table ip nat_pfsense` et `ifreload -a`. Je conserve `vmbr101` : c'est le LAN derrière lequel seront branchées les futures VM.
 
 ## 13. Comprendre les flux réseau
 
@@ -357,6 +393,8 @@ Le trafic entre l'hôte et pfSense reste dans `vmbr101`, un switch purement virt
 
 ### 13.2 Sortie Internet de pfSense (vmbr100 puis vmbr0, l'hôte est routeur)
 
+Ce trajet vaut tant que le WAN de pfSense est dans le sas. Depuis la bascule (section 12), pfSense sort directement par `vmbr0` avec l'IP failover, sans passer par le NAT de l'hôte.
+
 Exemple : un ping vers `8.8.8.8` lancé depuis pfSense.
 
 ```
@@ -384,4 +422,4 @@ pfSense (WAN 10.0.0.2)        Hôte Proxmox                              Interne
 
 Sans NAT, le paquet sortirait avec une source privée (`10.0.0.2`) qu'OVH bloquerait, et Internet ne saurait pas renvoyer la réponse.
 
-Les futures VM branchées sur `vmbr101` subiront un double NAT (pfSense, puis l'hôte) tant que le sas est en place. Il disparaît avec la bascule sur l'IP failover (section 12).
+Avec le sas en place, les futures VM auraient subi un double NAT (pfSense, puis l'hôte). La bascule sur l'IP failover (section 12) l'a supprimé : pfSense sort directement avec l'IP failover.

@@ -50,12 +50,12 @@ graph TD
 | Serveur Proxmox installé et accès sécurisé (pare-feu OVH, SSH par clé, double authentification) | Fait |
 | pfSense installé et accessible par tunnel SSH, sur un réseau d'installation temporaire | Fait |
 | Bascule du WAN de pfSense sur l'IP Additional (vMAC OVH), avec son pare-feu OVH | Fait |
-| VPN WireGuard | À faire |
+| VPN WireGuard (un seul client autorisé : mon PC) | Fait |
 | VLAN, reverse proxy, WAF, CrowdSec | À faire |
 | Application hébergée | À choisir |
 | Sauvegarde et supervision | À faire |
 
-pfSense a besoin d'Internet pour s'installer, alors que l'IP Additional d'OVH n'a pas d'accès direct à la passerelle. Je l'ai donc installé d'abord derrière un **sas NAT temporaire** sur l'hôte, puis j'ai basculé son WAN sur l'IP Additional. Le sas sera retiré une fois le VPN en place. Le raisonnement et les incidents sont dans [docs/03-pfsense.md](docs/03-pfsense.md).
+pfSense a besoin d'Internet pour s'installer, alors que l'IP Additional d'OVH n'a pas d'accès direct à la passerelle. Je l'ai donc installé d'abord derrière un **sas NAT temporaire** sur l'hôte, puis j'ai basculé son WAN sur l'IP Additional. Le sas reste à retirer, maintenant que le VPN est validé. Le raisonnement et les incidents sont dans [docs/03-pfsense.md](docs/03-pfsense.md).
 
 ---
 
@@ -92,7 +92,7 @@ Le détail des règles de filtrage inter-VLAN est documenté dans [docs/02-resea
 
 * **Firewall / Routeur / DNS — pfSense :** 
   * Filtrage réseau L3/L4, NAT sortant, routage inter-VLAN strict.
-  * Serveur **VPN WireGuard** (à venir) pour l'accès d'administration au VLAN MGMT et à l'IHM Proxmox (`:8006`). En attendant, l'accès passe par un tunnel SSH.
+  * Serveur **VPN WireGuard** pour l'accès d'administration au LAN, au VLAN MGMT et à l'IHM Proxmox (`:8006`). Un tunnel SSH par clé dédiée reste en secours.
   * Service **Unbound DNS (Split-Horizon)** pour la résolution directe des noms de domaine internes sans passer par le WAN (évite le Hairpin NAT). Configuration détaillée : [docs/03-pfsense.md](docs/03-pfsense.md).
 
 * **Reverse Proxy & Edge Security (VLAN DMZ) :** 
@@ -113,9 +113,9 @@ Plusieurs couches de sécurité indépendantes, chacune répondant à un besoin 
 
 * **Pare-feu OVH (Edge Network Firewall) :** N'autorise l'accès au SSH et à l'interface Proxmox que depuis mon IP, avant même que le trafic n'atteigne le serveur.
 * **pfSense / VLANs :** Isolation réseau L2/L3 et filtrage inter-VLAN strict.
-* **nftables (sur l'hôte et sur chaque VM) :** Pare-feu local filtrant strictement les flux entrants/sortants. Sur l'hôte, une règle par interface (LAN et VPN) est prévue après la mise en place du VPN.
+* **nftables (sur l'hôte et sur chaque VM) :** Pare-feu local filtrant strictement les flux entrants/sortants. Sur l'hôte, une règle par interface (LAN et VPN) est prévue maintenant que le VPN est en place.
 * **CrowdSec :** Détection d'intrusions et bannissement automatique comportemental.
-* **Fail2ban (sur l'hôte) :** Bannissement des IP qui échouent trop de fois à se connecter, une fois le VPN en place.
+* **Fail2ban (sur l'hôte) :** Bannissement des IP qui échouent trop de fois à se connecter, prévu maintenant que le VPN est en place.
 * **WAF (sur Traefik) :** Filtrage applicatif contre les injections SQL, XSS et failles OWASP Top 10.
 * **SSH durci :** Authentification par clé uniquement, mot de passe désactivé, connexion `root` interdite (utilisateur d'administration dédié avec `sudo`), limites sur les tentatives et les redirections de ports, journalisation de la clé utilisée à chaque connexion.
 * **Tunnel SSH par clé dédiée :** Clé sans shell, limitée aux interfaces web de pfSense et de Proxmox.
@@ -138,7 +138,7 @@ Cette infrastructure applique les principes de production, mais reste un projet 
 
 * **Single point of failure physique :** Un seul serveur, aucune haute disponibilité réelle (pas de second nœud Proxmox, pas de cluster, pas de stockage partagé type Ceph).
 * **Pas de redondance géographique :** En dehors de la copie de sauvegarde hors site.
-* **Accès d'administration lié à mon IP :** Mon IP à la maison n'est pas fixe. Tant que le VPN n'est pas en place, la règle du pare-feu OVH est mise à jour à la main quand elle change, et le KVM/IPMI d'OVH sert d'accès de secours.
+* **Accès d'administration lié à mon IP :** Mon IP à la maison n'est pas fixe. Le VPN WireGuard, qui vérifie une clé et non mon IP, est mon accès de repli. Pour le SSH et le port 8006 directs, la règle du pare-feu OVH est mise à jour à la main quand mon IP change, et le KVM/IPMI d'OVH sert d'accès de secours.
 
 Ces écarts avec une architecture pleinement HA sont volontairement documentés : ils indiquent précisément ce qu'il faudrait ajouter à l'échelle d'une vraie production (second nœud physique, cluster, stockage partagé).
 
@@ -167,7 +167,7 @@ Ces écarts avec une architecture pleinement HA sont volontairement documentés 
 
 ## Roadmap
 
-* [ ] VPN WireGuard sur pfSense, puis retrait du sas NAT temporaire
+* [ ] Retrait du sas NAT temporaire
 * [ ] Choix et déploiement de l'application hébergée (VLAN APP et DATA)
 * [ ] VPN site-à-site vers une seconde machine (Windows Server / Active Directory)
 * [ ] Automatisation de la configuration (Ansible)

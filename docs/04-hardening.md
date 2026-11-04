@@ -49,9 +49,13 @@ Ce pare-feu ne suit pas les connexions : la règle `established` (la première) 
 
 **Vérifié** : `apt update`, la résolution DNS et la synchronisation de l'heure fonctionnent. Il n'y a pas de règle pour les réponses NTP (UDP, port source 123) : si l'heure cesse de se synchroniser, en ajouter une avant la règle de refus.
 
+**Contrôle** : l'interrupteur d'activation du pare-feu est sur « activé », pour l'IP principale et pour l'IP failover. Il est distinct de l'état des règles : une règle affichée « Actif » ne filtre rien si le pare-feu est éteint. Je le vérifie après chaque modification, et depuis un autre réseau que chez moi avec `nc -vz -w 5 IP-DU-SERVEUR 22`, qui doit se terminer par un délai dépassé.
+
 **Problème connu** : mon IP à la maison change de temps en temps (elle n'est pas fixe). Quand ça arrive, la règle devient fausse et je perds l'accès au serveur. Solution : le VPN WireGuard sur pfSense (voir plus bas), qui vérifie une clé au lieu de vérifier une IP. Il me sert d'accès de repli quand mon IP change ; les règles sur mon IP restent à corriger à la main pour le SSH et le port 8006 directs.
 
 **Ce qui s'est passé** : mon IP a changé, ça m'a coupé l'accès SSH et web. J'ai réglé le problème en récupérant ma nouvelle IP (`curl -4 ifconfig.me`) et en corrigeant les règles à la main. J'ai pensé à automatiser ça avec un script qui met à jour la règle tout seul, mais j'ai préféré ne pas m'éparpiller — le VPN rend ce script inutile de toute façon. Peut-être à faire plus tard, mais pas maintenant.
+
+**Pare-feu désactivé par oubli.** Fail2ban a banni deux adresses extérieures dès son installation : des scanners avaient atteint le port 22, qui aurait dû être filtré. La cause : j'avais désactivé le pare-feu OVH pour tester une configuration, et j'avais oublié de le réactiver. Les règles étaient affichées « Actif », mais l'interrupteur du pare-feu lui-même était éteint. Les tentatives ont été retenues par les couches suivantes : mot de passe désactivé, `root` interdit, clés uniquement, Fail2ban. C'est un exemple concret de défense en profondeur : une couche éteinte par erreur, deux autres qui tiennent. Je l'ai réactivé, puis j'ai vérifié le filtrage depuis le partage de connexion de mon téléphone : les ports 22 et 8006 ne répondent plus (délai dépassé). Je contrôle désormais l'interrupteur après chaque modification.
 
 ### Firewall OVH — sur l'IP failover de pfSense
 
@@ -133,21 +137,81 @@ sshd -t
 systemctl reload ssh
 ```
 
-Depuis un nouveau terminal, `ssh root@IP-DU-SERVEUR` doit être refusé, et `ssh adminsys@IP-DU-SERVEUR` doit fonctionner. Je garde la session ouverte jusqu'à ce test.
+Depuis un nouveau terminal, `ssh root@IP-DU-SERVEUR` doit être refusé, et `ssh adminsys@IP-DU-SERVEUR` doit fonctionner. Je garde la session ouverte jusqu'à ce test. Ce `sed` ne suffit pas à lui seul : la section suivante explique l'ordre de lecture des fichiers de configuration, et le fichier de référence qui garantit que rien ne contredit ces réglages.
 
 **À savoir** : le mot de passe de `sudo` est celui de l'utilisateur ; il va dans un gestionnaire de mots de passe. S'il est perdu, le KVM d'OVH permet de le réinitialiser (`passwd adminsys`). L'interface web de Proxmox continue d'utiliser `root@pam`, protégé par le TOTP.
+
+## SSH — l'ordre de lecture des fichiers de configuration
+
+**Fait.**
+
+Un réglage écrit dans `sshd_config` n'est pas forcément celui qui s'applique. Sous Debian, `sshd_config` commence par `Include /etc/ssh/sshd_config.d/*.conf` : SSH lit d'abord les fichiers de ce dossier, dans l'ordre alphabétique, puis le reste, et il garde **la première valeur rencontrée** pour chaque réglage.
+
+```
+00-hardening.conf     lu en premier   PasswordAuthentication no    (gagne)
+50-cloud-init.conf    lu ensuite      PasswordAuthentication yes   (ignoré)
+sshd_config           lu en dernier   PasswordAuthentication no
+```
+
+**Ce que j'ai trouvé** : le fichier `50-cloud-init.conf`, créé par cloud-init au moment de la préparation de l'image du serveur, contenait `PasswordAuthentication yes`. Lu avant `sshd_config`, il avait priorité sur le `no` que j'y avais écrit avec `sed`. Mon fichier de limites, qui s'appelait alors `99-hardening.conf` et était lu après lui, ne pouvait pas le corriger non plus.
+
+**Correctif** : je n'ai pas créé de second fichier. J'ai **renommé** le fichier de limites existant pour qu'il soit lu en premier, puis j'y ai ajouté les réglages d'authentification.
+
+```bash
+sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config.d/50-cloud-init.conf
+mv /etc/ssh/sshd_config.d/99-hardening.conf /etc/ssh/sshd_config.d/00-hardening.conf
+printf "\n# Authentification\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\nAuthenticationMethods publickey\n" >> /etc/ssh/sshd_config.d/00-hardening.conf
+echo "ssh_pwauth: false" > /etc/cloud/cloud.cfg.d/99-no-ssh-password.cfg
+sshd -t && systemctl reload ssh
+sshd -T | grep -E 'passwordauthentication|kbdinteractiveauthentication|permitrootlogin|maxauthtries|allowtcpforwarding|loglevel'
+```
+
+| Commande | Rôle |
+|---|---|
+| `sed -i` sur `50-cloud-init.conf` | retire la contradiction dans le fichier de cloud-init (il ne modifie que les lignes qui commencent par le mot) |
+| `mv ... 00-hardening.conf` | le nom commence par `00` : le fichier est lu avant `50-cloud-init.conf`, donc rien ne peut le contredire. Ses limites passent aussi en premier |
+| `printf ... >>` | ajoute les réglages d'authentification **à la fin** du fichier. Avec `>` au lieu de `>>`, le fichier serait écrasé et les limites disparaîtraient |
+| `ssh_pwauth: false` | empêche cloud-init de réactiver le mot de passe : une précaution, la vraie protection étant le fichier `00-hardening.conf` |
+| `sshd -t && systemctl reload ssh` | vérifie la syntaxe, puis recharge sans couper les sessions ouvertes |
+| `sshd -T` | affiche la configuration **effective**, après lecture de tous les fichiers |
+
+Le contenu final du fichier est décrit dans la section suivante.
+
+Le contrôle doit afficher `passwordauthentication no`, `kbdinteractiveauthentication no`, `permitrootlogin no`, `maxauthtries 3`, `allowtcpforwarding local` et `loglevel VERBOSE` : les trois premiers prouvent la correction, les trois derniers que les limites sont toujours là. Je teste ensuite une connexion par clé depuis un second terminal avant de fermer la session ouverte.
+
+**Leçon** : je ne me fie plus au contenu d'un fichier, mais à `sshd -T`, la seule source qui dit ce que SSH applique réellement.
+
+**Chercher d'éventuelles connexions par mot de passe.** Mon IP change : je ne reconnais donc pas une connexion à son adresse. Trois critères, qui n'en dépendent pas :
+
+```bash
+sudo journalctl -u ssh --no-pager | grep -E "Accepted password|Accepted keyboard-interactive"
+sudo journalctl -u ssh --since "30 days ago" --no-pager | grep "Accepted publickey" | grep -o "SHA256:[^ ]*" | sort | uniq -c
+last -ai | head -30
+```
+
+- Je n'utilise jamais de mot de passe : toute ligne `Accepted password` postérieure au durcissement est suspecte.
+- Les empreintes des connexions par clé doivent être celles de mes deux clés (administration et tunnel).
+- Je reconnais mes connexions à leur date et à leur heure.
+
+**Ce que ces réglages n'interdisent pas.** Ils ne concernent que le service SSH. La console KVM/IPMI d'OVH, le mode rescue et l'interface web de Proxmox (`root@pam`, avec le TOTP) ne passent pas par `sshd` : ils restent mes accès de secours. Je vérifie que le mot de passe `root` est défini (`passwd -S root` doit afficher `root P`) et je teste une fois la console KVM, avant d'en avoir besoin.
 
 ## SSH — limites sur les tentatives, les redirections et les logs
 
 **Fait.**
 
-J'ajoute des limites dans un fichier dédié : sous Debian, les fichiers de `/etc/ssh/sshd_config.d/` sont lus avant `sshd_config` et priment sur lui, donc je n'ai pas à toucher au fichier principal.
+Tout le durcissement SSH tient dans **un seul fichier**, `/etc/ssh/sshd_config.d/00-hardening.conf`. Son nom le fait lire avant `50-cloud-init.conf` (voir la section précédente), et je n'ai pas à toucher au fichier principal.
 
 ```bash
-nano /etc/ssh/sshd_config.d/99-hardening.conf
+nano /etc/ssh/sshd_config.d/00-hardening.conf
 ```
 
 ```
+# Authentification : clés uniquement
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AuthenticationMethods publickey
+
 # Limiter les tentatives et les connexions
 MaxAuthTries 3
 LoginGraceTime 30
@@ -167,6 +231,9 @@ LogLevel VERBOSE
 
 | Option | Effet |
 |---|---|
+| `PasswordAuthentication no`, `KbdInteractiveAuthentication no` | plus de mot de passe, ni par la voie classique ni par le clavier interactif |
+| `PermitRootLogin no` | aucune connexion SSH directe en `root` |
+| `AuthenticationMethods publickey` | seule la clé est acceptée |
 | `MaxAuthTries 3`, `LoginGraceTime 30`, `MaxStartups 10:30:60` | limitent les essais par connexion, le temps pour s'authentifier et les connexions simultanées non authentifiées |
 | `ClientAliveInterval`, `ClientAliveCountMax` | coupent une session inactive |
 | `X11Forwarding no` | pas d'affichage graphique distant |
@@ -180,7 +247,7 @@ LogLevel VERBOSE
 ```bash
 sshd -t
 systemctl reload ssh
-sshd -T | grep -E 'passwordauthentication|permitrootlogin|allowtcpforwarding|maxauthtries'
+sshd -T | grep -E 'passwordauthentication|kbdinteractiveauthentication|permitrootlogin|allowtcpforwarding|maxauthtries'
 ```
 
 `sshd -t` valide la syntaxe (ne pas recharger s'il affiche une erreur). `sshd -T` affiche les valeurs réellement appliquées : à vérifier avant de fermer la session ouverte, et tester une connexion depuis un second terminal.
@@ -303,9 +370,9 @@ Le firewall OVH bloque déjà tout sauf mon IP. Donc les mesures suivantes ne so
 1. **Couper la connexion SSH par mot de passe et interdire `root`** — fait — utile si jamais quelqu'un réussit à se faire passer pour mon IP, ou si j'élargis la règle un jour
 2. **Double authentification sur l'interface web Proxmox** — fait — la seule mesure ici qui protège contre un problème qui n'a rien à voir avec le réseau (mot de passe volé par phishing par exemple)
 3. **Limites SSH et clé de tunnel restreinte** — fait — limitent ce qu'une clé volée ou un accès de tous les jours peut atteindre
-4. **Basculer le WAN de pfSense sur l'IP failover** — fait — prérequis du VPN ; le sas temporaire est retiré après le VPN
+4. **Basculer le WAN de pfSense sur l'IP failover** — fait — prérequis du VPN ; le sas temporaire a été retiré après le VPN
 5. **VPN WireGuard sur pfSense** — fait — accès par clé, indépendant de mon IP
-6. **Fail2ban** — à faire après le VPN — pas très utile tant que seule mon IP peut atteindre le serveur
+6. **Fail2ban** — fait — installé après le VPN, quand mon adresse du VPN est devenue utilisable dans `ignoreip`
 7. **nftables sur le serveur lui-même** — à faire après le VPN — règle par interface, pas par IP
 8. **Vérifier que le SSH de pfSense est désactivé** — à faire
 
@@ -391,24 +458,59 @@ Le tunnel SSH reste en secours : il ne dépend ni de pfSense ni de WireGuard.
 
 ## Fail2ban
 
-**À faire. Après le VPN — vraiment utile une fois le VPN en place.**
+**Fait.** Installé après le VPN, sur l'hôte.
 
 ```bash
 apt update
 apt install fail2ban -y
+nano /etc/fail2ban/jail.local
+```
+
+```
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 10.6.0.2
+bantime  = 1h
+findtime = 10m
+maxretry = 3
+bantime.increment = true
+bantime.factor    = 2
+bantime.maxtime   = 1w
+
+[sshd]
+enabled = true
+backend = systemd
+```
+
+```bash
+fail2ban-client -t
 systemctl enable --now fail2ban
 fail2ban-client status sshd
 ```
 
-Surveille les tentatives de connexion SSH ratées, bannit l'IP après trop d'essais. La jail `sshd` est activée par défaut sur les configurations Debian récentes.
+- Une IP est bannie 1 heure après 3 échecs en 10 minutes. Pour une récidive, la durée double (1 h, 2 h, 4 h…) jusqu'à une semaine.
+- `backend = systemd` : les journaux SSH sont lus dans le journal système.
+- `ignoreip` contient mon adresse du VPN (`10.6.0.2`) : je ne risque donc pas de me bannir en passant par le VPN. Je n'y mets pas mon IP de la maison, qui change.
 
-**Pourquoi pas avant** : seule mon IP peut atteindre le port 22, donc il n'y a presque rien à bannir. Et comme mon IP change, je ne peux pas la mettre dans `ignoreip` : quelques erreurs de connexion de ma part suffiraient à me bannir moi-même. Pour débannir : `fail2ban-client set sshd unbanip <IP>`, depuis le KVM si je suis bloqué.
+**Pourquoi pas avant** : tant que seule mon IP pouvait atteindre le port 22, il n'y avait presque rien à bannir, et mon IP changeante empêchait d'utiliser `ignoreip` : quelques erreurs de ma part suffisaient à me bannir. Le VPN me donne une adresse stable.
+
+**Tester le blocage**, sans risque, avec une adresse de documentation qui n'existe pas sur Internet :
+
+```bash
+fail2ban-client set sshd banip 192.0.2.1
+fail2ban-client status sshd
+nft list ruleset | grep -B2 -A3 "192.0.2.1"
+fail2ban-client set sshd unbanip 192.0.2.1
+```
+
+Le bannissement passe par nftables : Fail2ban crée une table propre, avec un ensemble `addr-set-sshd` qui contient les adresses bannies et une chaîne `f2b-chain` qui les rejette avant les autres règles. Cette table cohabite avec la règle par interface prévue plus bas, chacune ne touchant pas à l'autre. Pour débannir une adresse : `fail2ban-client set sshd unbanip <IP>`, depuis le KVM si je suis bloqué.
+
+**Ce qui s'est passé** : dès son installation, Fail2ban avait déjà banni deux adresses extérieures. Cela m'a fait vérifier le pare-feu OVH (voir plus haut) : il était désactivé.
 
 ## nftables sur le serveur Proxmox
 
 **À faire. Après le VPN.**
 
-Une règle locale par interface : le port 22 et le port 8006 ne sont joignables que depuis le LAN (`vmbr101`), le VPN, et mon IP. Elle ne dépend donc plus d'une adresse qui change, sauf pour la ligne sur mon IP.
+Une règle locale par interface : le port 22 et le port 8006 ne sont joignables que depuis le LAN et le VPN (qui arrivent tous deux par `vmbr101`), et depuis mon IP. Elle ne dépend donc plus d'une adresse qui change, sauf pour la ligne sur mon IP.
 
 ```bash
 nano /etc/nftables-hote.conf
@@ -429,10 +531,10 @@ table inet hote {
 }
 ```
 
-Ajouter la ligne de l'interface du VPN (`iifname "wg0"`) quand il existe.
+Il n'y a pas de ligne pour une interface `wg0` : WireGuard tourne dans pfSense, pas sur l'hôte. Le trafic du VPN arrive sur l'hôte par `vmbr101`, avec une adresse source du VPN (`10.6.0.x`) : il est donc couvert par la règle de `vmbr101`.
 
 - **L'ICMP reste autorisé** : pfSense envoie un ping à sa passerelle pour surveiller son WAN. Sans lui, la passerelle apparaît hors ligne dans pfSense.
-- **Une table dédiée**, et non `nft list ruleset > /etc/nftables.conf` : cette commande copierait aussi la table de NAS du sas et les tables du pare-feu Proxmox.
+- **Une table dédiée**, et non `nft list ruleset > /etc/nftables.conf` : cette commande copierait aussi toutes les tables actives, y compris celles du pare-feu Proxmox.
 - **Charger avec** `nft -f /etc/nftables-hote.conf`, puis tester depuis un second terminal avant de fermer la session. Une erreur dans une chaîne `policy drop` coupe l'accès : le KVM est le secours.
 - **Rendre permanent** : ajouter `post-up nft -f /etc/nftables-hote.conf` au bloc `vmbr101` dans `/etc/network/interfaces`.
 - Si le pare-feu Proxmox est activé sur l'hôte, vérifier que les deux ne se contredisent pas.

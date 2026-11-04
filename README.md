@@ -55,7 +55,7 @@ graph TD
 | Application hébergée | À choisir |
 | Sauvegarde et supervision | À faire |
 
-pfSense a besoin d'Internet pour s'installer, alors que l'IP Additional d'OVH n'a pas d'accès direct à la passerelle. Je l'ai donc installé d'abord derrière un **sas NAT temporaire** sur l'hôte, puis j'ai basculé son WAN sur l'IP Additional. Le sas reste à retirer, maintenant que le VPN est validé. Le raisonnement et les incidents sont dans [docs/03-pfsense.md](docs/03-pfsense.md).
+pfSense a besoin d'Internet pour s'installer, alors que l'IP Additional d'OVH n'a pas d'accès direct à la passerelle. Je l'ai donc installé d'abord derrière un **sas NAT temporaire** sur l'hôte, puis j'ai basculé son WAN sur l'IP Additional. Le sas a été retiré une fois le VPN validé. Le raisonnement et les incidents sont dans [docs/03-pfsense.md](docs/03-pfsense.md).
 
 ---
 
@@ -115,9 +115,9 @@ Plusieurs couches de sécurité indépendantes, chacune répondant à un besoin 
 * **pfSense / VLANs :** Isolation réseau L2/L3 et filtrage inter-VLAN strict.
 * **nftables (sur l'hôte et sur chaque VM) :** Pare-feu local filtrant strictement les flux entrants/sortants. Sur l'hôte, une règle par interface (LAN et VPN) est prévue maintenant que le VPN est en place.
 * **CrowdSec :** Détection d'intrusions et bannissement automatique comportemental.
-* **Fail2ban (sur l'hôte) :** Bannissement des IP qui échouent trop de fois à se connecter, prévu maintenant que le VPN est en place.
+* **Fail2ban (sur l'hôte) :** Bannissement des IP qui échouent trop de fois à se connecter, avec des durées croissantes pour les récidivistes et un blocage par nftables.
 * **WAF (sur Traefik) :** Filtrage applicatif contre les injections SQL, XSS et failles OWASP Top 10.
-* **SSH durci :** Authentification par clé uniquement, mot de passe désactivé, connexion `root` interdite (utilisateur d'administration dédié avec `sudo`), limites sur les tentatives et les redirections de ports, journalisation de la clé utilisée à chaque connexion.
+* **SSH durci :** Authentification par clé uniquement, mot de passe désactivé, connexion `root` interdite (utilisateur d'administration dédié avec `sudo`), limites sur les tentatives et les redirections de ports, journalisation de la clé utilisée à chaque connexion. La configuration effective est contrôlée avec `sshd -T`, car un fichier de cloud-init peut contredire `sshd_config`.
 * **Tunnel SSH par clé dédiée :** Clé sans shell, limitée aux interfaces web de pfSense et de Proxmox.
 * **Double authentification (TOTP) :** Sur l'interface web de Proxmox.
 
@@ -167,7 +167,7 @@ Ces écarts avec une architecture pleinement HA sont volontairement documentés 
 
 ## Roadmap
 
-* [ ] Retrait du sas NAT temporaire
+* [x] Retrait du sas NAT temporaire
 * [ ] Choix et déploiement de l'application hébergée (VLAN APP et DATA)
 * [ ] VPN site-à-site vers une seconde machine (Windows Server / Active Directory)
 * [ ] Automatisation de la configuration (Ansible)

@@ -118,6 +118,8 @@ La dernière commande doit afficher `net.ipv4.ip_forward = 1`.
 
 ### 5.2 Créer la règle de masquerade (nftables)
 
+Méthode propre et persistante : une table nftables dédiée, chargée par le `post-up` du bridge. Dans mon lab, j'ai en réalité posé la règle à la main avec `iptables`, sans la rendre persistante ; la version nftables ci-dessous est celle que je recommande.
+
 ```
 nano /etc/nftables-vnat.conf
 ```
@@ -358,9 +360,49 @@ La console ne permet pas cette configuration : elle refuse une passerelle situé
 
 Il est propre à chaque IP : les règles de l'IP principale ne protègent pas l'IP failover. Les règles à créer, puis activer en dernier, sont dans [04-hardening.md](04-hardening.md). Après l'activation, je refais les vérifications de l'étape 12.4.
 
-### 12.6 À faire après le VPN
+### 12.6 Retirer le sas
 
-Retirer le sas : supprimer les lignes `post-up` / `post-down` et le bloc `vmbr100` de `/etc/network/interfaces`, puis `nft delete table ip nat_pfsense` et `ifreload -a`. Je conserve `vmbr101` : c'est le LAN derrière lequel seront branchées les futures VM.
+**Fait**, une fois le VPN validé. Je conserve `vmbr101` : c'est le LAN derrière lequel seront branchées les futures VM.
+
+Avant : un instantané (`qm snapshot 100 etat-vpn`), une copie de la configuration de pfSense (**Diagnostics → Backup & Restore**, hors du dépôt : elle contient les clés WireGuard) et la vérification que plus rien n'utilise `vmbr100` :
+
+```
+qm config 100 | grep net
+grep -rl "vmbr100" /etc/pve/qemu-server/ /etc/pve/lxc/ 2>/dev/null
+```
+
+`net0` doit être sur `vmbr0` et `net1` sur `vmbr101` ; la deuxième commande ne doit afficher aucun fichier. Côté pfSense, la route par défaut (`netstat -rn -f inet | grep default`) doit pointer vers la passerelle d'OVH.
+
+**Retirer le bridge**
+
+```
+cp /etc/network/interfaces /etc/network/interfaces.bak-$(date +%F)
+ifdown vmbr100
+nano /etc/network/interfaces
+ifreload -a
+ip -br a
+ip route show
+```
+
+Dans le fichier, supprimer tout le bloc `vmbr100` (et ses lignes `post-up` / `post-down` si elles existent). Ne pas toucher à `vmbr0` ni à `vmbr101`. Après `ifreload`, `vmbr100` doit avoir disparu, et la route par défaut et la route du VPN doivent être intactes.
+
+**Retirer le NAT**, selon la façon dont il avait été posé :
+
+- **Table nftables dédiée** (méthode de l'étape 5.2) : `nft delete table ip nat_pfsense`, puis supprimer `/etc/nftables-vnat.conf`.
+- **Règle `iptables` posée à la main** (mon cas) : `iptables -t nat -D POSTROUTING -s 10.0.0.0/24 -o vmbr0 -j MASQUERADE`.
+
+Dans les deux cas, vérifier qu'il ne reste rien, et que rien ne la recrée au démarrage :
+
+```
+iptables -t nat -S
+nft list ruleset | grep -i masquerade
+grep -rIl "MASQUERADE\|10\.0\.0\.0/24" /etc /root /home 2>/dev/null
+sysctl net.ipv4.ip_forward
+```
+
+Les deux premières commandes ne doivent montrer que les politiques par défaut. Le forwarding IPv4 de l'hôte n'a plus d'utilité une fois le sas retiré.
+
+**Retester tous les accès** : VPN (GUI de pfSense, GUI de Proxmox, SSH), tunnel SSH de secours (VPN coupé), SSH direct, GUI de Proxmox directe, et sortie de pfSense (`fetch -qo - https://ifconfig.me` doit afficher l'IP failover).
 
 ## 13. Comprendre les flux réseau
 

@@ -75,16 +75,16 @@ pfSense a besoin d'Internet pour s'installer, alors que l'IP Additional d'OVH n'
 
 pfSense est le point d'entrée unique du réseau, configuré en architecture **Routed Bridge** (spécificité OVHcloud : l'IP Additional est associée à une vMAC attribuée à la carte réseau virtuelle de pfSense, qui assure le routage et le filtrage interne vers chaque VM).
 
-Quatre VLANs séparent les rôles par fonction :
+Quatre VLANs séparent les rôles par fonction, et l'hôte Proxmox reste dans son propre réseau (`192.168.100.0/24`), sans adresse dans les VLAN :
 
 | VLAN | Rôle | Accès entrant autorisé |
 | :--- | :--- | :--- |
 | **DMZ (10)** | Reverse proxy, WAF | Internet via pfSense (ports 80/443 uniquement) |
 | **APP (20)** | Serveur web (Apache, PHP) | VLAN DMZ uniquement |
 | **DATA (30)** | Base de données | VLAN APP uniquement (port de la base, 3306 pour MariaDB) |
-| **MGMT (40)** | Sauvegarde, supervision, PVE | Accès distant via **VPN WireGuard (pfSense)** ou tunnel SSH |
+| **MGMT (40)** | Sauvegarde, supervision, poste d'administration | Accès distant via **VPN WireGuard (pfSense)** ou tunnel SSH |
 
-Le détail des règles de filtrage inter-VLAN est documenté dans [docs/02-reseau-vlan.md](docs/02-reseau-vlan.md).
+Le plan d'adressage, la place de l'hôte et les règles de filtrage inter-VLAN sont documentés dans [docs/02-reseau-vlan.md](docs/02-reseau-vlan.md).
 
 ---
 
@@ -113,7 +113,7 @@ Plusieurs couches de sécurité indépendantes, chacune répondant à un besoin 
 
 * **Pare-feu OVH (Edge Network Firewall) :** N'autorise l'accès au SSH et à l'interface Proxmox que depuis mon IP, avant même que le trafic n'atteigne le serveur.
 * **pfSense / VLANs :** Isolation réseau L2/L3 et filtrage inter-VLAN strict.
-* **nftables (sur l'hôte et sur chaque VM) :** Pare-feu local filtrant strictement les flux entrants/sortants. Sur l'hôte, une règle par interface (LAN et VPN) est prévue maintenant que le VPN est en place.
+* **nftables (sur l'hôte et sur chaque VM) :** Pare-feu local filtrant strictement les flux entrants/sortants. Sur l'hôte, une table nftables ne laisse passer le SSH et l'interface web que depuis le VPN et mon IP, en IPv4 et en IPv6 : le pare-feu OVH ne filtre que l'IPv4.
 * **CrowdSec :** Détection d'intrusions et bannissement automatique comportemental.
 * **Fail2ban (sur l'hôte) :** Bannissement des IP qui échouent trop de fois à se connecter, avec des durées croissantes pour les récidivistes et un blocage par nftables.
 * **WAF (sur Traefik) :** Filtrage applicatif contre les injections SQL, XSS et failles OWASP Top 10.
@@ -138,6 +138,7 @@ Cette infrastructure applique les principes de production, mais reste un projet 
 
 * **Single point of failure physique :** Un seul serveur, aucune haute disponibilité réelle (pas de second nœud Proxmox, pas de cluster, pas de stockage partagé type Ceph).
 * **Pas de redondance géographique :** En dehors de la copie de sauvegarde hors site.
+* **Pas de haute disponibilité de pfSense :** la VM démarre avec l'hôte, mais ne redémarre pas seule si elle plante.
 * **Accès d'administration lié à mon IP :** Mon IP à la maison n'est pas fixe. Le VPN WireGuard, qui vérifie une clé et non mon IP, est mon accès de repli. Pour le SSH et le port 8006 directs, la règle du pare-feu OVH est mise à jour à la main quand mon IP change, et le KVM/IPMI d'OVH sert d'accès de secours.
 
 Ces écarts avec une architecture pleinement HA sont volontairement documentés : ils indiquent précisément ce qu'il faudrait ajouter à l'échelle d'une vraie production (second nœud physique, cluster, stockage partagé).

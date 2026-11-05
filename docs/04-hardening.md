@@ -373,7 +373,7 @@ Le firewall OVH bloque déjà tout sauf mon IP. Donc les mesures suivantes ne so
 4. **Basculer le WAN de pfSense sur l'IP failover** — fait — prérequis du VPN ; le sas temporaire a été retiré après le VPN
 5. **VPN WireGuard sur pfSense** — fait — accès par clé, indépendant de mon IP
 6. **Fail2ban** — fait — installé après le VPN, quand mon adresse du VPN est devenue utilisable dans `ignoreip`
-7. **nftables sur le serveur lui-même** — à faire après le VPN — règle par interface, pas par IP
+7. **nftables sur le serveur lui-même** — fait — règle par interface : le VPN et mon IP seulement, IPv4 et IPv6
 8. **Vérifier que le SSH de pfSense est désactivé** — à faire
 
 ## VPN WireGuard sur pfSense
@@ -502,42 +502,110 @@ nft list ruleset | grep -B2 -A3 "192.0.2.1"
 fail2ban-client set sshd unbanip 192.0.2.1
 ```
 
-Le bannissement passe par nftables : Fail2ban crée une table propre, avec un ensemble `addr-set-sshd` qui contient les adresses bannies et une chaîne `f2b-chain` qui les rejette avant les autres règles. Cette table cohabite avec la règle par interface prévue plus bas, chacune ne touchant pas à l'autre. Pour débannir une adresse : `fail2ban-client set sshd unbanip <IP>`, depuis le KVM si je suis bloqué.
+Le bannissement passe par nftables : Fail2ban crée une table propre, avec un ensemble `addr-set-sshd` qui contient les adresses bannies et une chaîne `f2b-chain` qui les rejette avant les autres règles. Cette table cohabite avec la table nftables de l'hôte décrite plus bas, chacune ne touchant pas à l'autre. Pour débannir une adresse : `fail2ban-client set sshd unbanip <IP>`, depuis le KVM si je suis bloqué.
 
 **Ce qui s'est passé** : dès son installation, Fail2ban avait déjà banni deux adresses extérieures. Cela m'a fait vérifier le pare-feu OVH (voir plus haut) : il était désactivé.
 
 ## nftables sur le serveur Proxmox
 
-**À faire. Après le VPN.**
+**Fait.** Deuxième barrière derrière le pare-feu OVH : l'hôte se défend seul si le pare-feu d'OVH est éteint ou contourné.
 
-Une règle locale par interface : le port 22 et le port 8006 ne sont joignables que depuis le LAN et le VPN (qui arrivent tous deux par `vmbr101`), et depuis mon IP. Elle ne dépend donc plus d'une adresse qui change, sauf pour la ligne sur mon IP.
+**Ce que j'ai découvert.** L'hôte a une adresse IPv6 publique, et `sshd` écoute sur `[::]:22`, Proxmox sur `*:8006`. Or le pare-feu OVH (Edge Network Firewall) ne filtre que l'IPv4 : le SSH et l'interface web étaient donc joignables en IPv6 sans aucun filtre, protégés seulement par l'authentification. Plusieurs services écoutaient aussi sur toutes les interfaces : Postfix (25), rpcbind (111) et spiceproxy (3128). Une table nftables de type `inet` couvre l'IPv4 **et** l'IPv6, et ferme tout cela d'un coup.
 
-```bash
-nano /etc/nftables-hote.conf
+### La règle
+
+Fichier `/etc/nftables-hote.conf` :
+
 ```
+define MON_IP = TON-IP
 
-```
 add table inet hote
 flush table inet hote
 table inet hote {
     chain input {
         type filter hook input priority 0; policy drop;
+
         ct state established,related accept
-        iif lo accept
+        iifname "lo" accept
         meta l4proto { icmp, ipv6-icmp } accept
-        iifname "vmbr101" tcp dport { 22, 8006 } accept
-        ip saddr TON-IP/32 tcp dport { 22, 8006 } accept
+
+        # SSH et interface web depuis le VPN : il arrive par vmbr101, source 10.6.0.0/24
+        iifname "vmbr101" ip saddr 10.6.0.0/24 tcp dport { 22, 8006 } accept
+
+        # SSH et interface web depuis mon IP publique, par vmbr0
+        iifname "vmbr0" ip saddr $MON_IP tcp dport { 22, 8006 } accept
     }
 }
 ```
 
-Il n'y a pas de ligne pour une interface `wg0` : WireGuard tourne dans pfSense, pas sur l'hôte. Le trafic du VPN arrive sur l'hôte par `vmbr101`, avec une adresse source du VPN (`10.6.0.x`) : il est donc couvert par la règle de `vmbr101`.
+| Ligne | Effet |
+|---|---|
+| `add table inet hote` puis `flush table inet hote` | crée la table, ou la vide si elle existe : le fichier peut être rechargé sans doublons, et il ne touche pas à la table de Fail2ban |
+| `policy drop` | tout ce qui n'est pas autorisé ensuite est refusé |
+| `ct state established,related accept` | les réponses aux connexions lancées par l'hôte passent (mises à jour, NTP, session SSH ouverte) |
+| `meta l4proto { icmp, ipv6-icmp } accept` | le ping passe : pfSense surveille sa passerelle ainsi, et l'IPv6 en a besoin |
+| règle de `vmbr101` | le SSH et l'interface web depuis le VPN uniquement (source `10.6.0.0/24`) : les futures VM n'atteignent pas l'hôte |
+| règle de `vmbr0` | pareil depuis mon IP publique, seconde barrière |
 
-- **L'ICMP reste autorisé** : pfSense envoie un ping à sa passerelle pour surveiller son WAN. Sans lui, la passerelle apparaît hors ligne dans pfSense.
-- **Une table dédiée**, et non `nft list ruleset > /etc/nftables.conf` : cette commande copierait aussi toutes les tables actives, y compris celles du pare-feu Proxmox.
-- **Charger avec** `nft -f /etc/nftables-hote.conf`, puis tester depuis un second terminal avant de fermer la session. Une erreur dans une chaîne `policy drop` coupe l'accès : le KVM est le secours.
-- **Rendre permanent** : ajouter `post-up nft -f /etc/nftables-hote.conf` au bloc `vmbr101` dans `/etc/network/interfaces`.
-- Si le pare-feu Proxmox est activé sur l'hôte, vérifier que les deux ne se contredisent pas.
+`iifname` compare le **nom** de l'interface au moment du trafic : la règle n'échoue donc pas si l'interface n'existe pas encore au démarrage.
+
+### L'appliquer sans risque de me couper l'accès
+
+Je vérifie d'abord la syntaxe (`nft -c -f /etc/nftables-hote.conf`, qui ne charge rien). Puis je programme un retour arrière automatique avant de charger :
+
+```bash
+systemd-run --on-active=600 --unit=nft-rollback /usr/sbin/nft delete table inet hote
+nft -f /etc/nftables-hote.conf
+```
+
+La minuterie supprime la table au bout de dix minutes. Je teste dans ce délai, depuis un second terminal et avec le KVM d'OVH ouvert : un SSH direct, l'interface web directe, le SSH par le VPN, un `apt update` et l'état de la passerelle dans pfSense. Si tout passe, j'annule le filet (`systemctl stop nft-rollback.timer`). Sinon, la règle disparaît toute seule. Ma session ouverte survit au chargement, grâce à la ligne `established,related`.
+
+### La rendre permanente
+
+Un service systemd charge le fichier avant que le réseau démarre, `/etc/systemd/system/nftables-hote.service` :
+
+```
+[Unit]
+Description=Pare-feu de l'hote (table nftables hote)
+Wants=network-pre.target
+Before=network-pre.target
+DefaultDependencies=no
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables-hote.conf
+ExecStop=-/usr/sbin/nft delete table inet hote
+
+[Install]
+WantedBy=sysinit.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now nftables-hote.service
+systemctl status nftables-hote.service
+```
+
+J'ai choisi un service plutôt qu'une ligne `post-up` dans `/etc/network/interfaces` : la règle est chargée **avant** le réseau, donc sans fenêtre d'exposition au démarrage, et un défaut dans le fichier fait échouer le service seul, sans toucher à la configuration réseau. Je n'utilise pas non plus le service `nftables` de Debian, dont le fichier commence par `flush ruleset` : il effacerait aussi la table de Fail2ban.
+
+### Quand mon IP change
+
+Mon IP apparaît à trois endroits : les deux règles du pare-feu OVH (ports 22 et 8006) et `MON_IP` dans ce fichier. Le VPN, lui, ne dépend pas de mon IP :
+
+1. Je connecte le VPN (`wg-quick up lab`) et j'ouvre une session SSH sur `192.168.100.2`.
+2. Je corrige `MON_IP` dans `/etc/nftables-hote.conf`, puis `systemctl restart nftables-hote.service`.
+3. Je corrige les deux règles dans le manager OVH.
+
+### Ce qui s'est passé
+
+**IP non mise à jour avant le test.** J'ai chargé la règle alors que le pare-feu OVH avait encore mon ancienne IP : mes tests de SSH et d'interface web directs auraient échoué à cause d'OVH, pas de nftables. Je suis revenue à l'état d'avant (suppression de la table) et j'ai testé une couche à la fois : OVH seul, puis nftables.
+
+**Nom de minuterie déjà pris.** `systemd-run` a refusé de recréer `nft-rollback` (« already loaded »), parce que l'unité précédente restait en mémoire après sa fin. `systemctl stop nft-rollback.timer nft-rollback.service` a libéré le nom.
+
+**pfSense ne démarrait pas avec l'hôte.** Le VPN dépend de la VM pfSense, qui n'avait pas l'option de démarrage automatique. Corrigé : `qm set 100 --onboot 1 --startup order=1,up=60` (pfSense démarre en premier, les VM suivantes attendent 60 secondes). Cela ne joue qu'au démarrage de l'hôte : si pfSense plante, il ne redémarre pas seul.
 
 ## nftables sur chaque VM (Reverse Proxy / Web / BDD)
 

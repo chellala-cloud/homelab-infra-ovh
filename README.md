@@ -139,7 +139,7 @@ Cette infrastructure applique les principes de production, mais reste un projet 
 * **Single point of failure physique :** Un seul serveur, aucune haute disponibilité réelle (pas de second nœud Proxmox, pas de cluster, pas de stockage partagé type Ceph).
 * **Pas de redondance géographique :** En dehors de la copie de sauvegarde hors site.
 * **Pas de haute disponibilité de pfSense :** la VM démarre avec l'hôte, mais ne redémarre pas seule si elle plante.
-* **Accès d'administration lié à mon IP :** Mon IP à la maison n'est pas fixe. Le VPN WireGuard, qui vérifie une clé et non mon IP, est mon accès de repli. Pour le SSH et le port 8006 directs, la règle du pare-feu OVH est mise à jour à la main quand mon IP change, et le KVM/IPMI d'OVH sert d'accès de secours.
+* **Accès d'administration lié à mon IP :** Mon IP à la maison n'est pas fixe. Le VPN WireGuard, qui vérifie une clé et non mon IP, est mon accès de repli. Pour le SSH et le port 8006 directs, la règle du pare-feu OVH est mise à jour à la main quand mon IP change, et la console du manager OVH (SOL) sert d'accès de secours.
 
 Ces écarts avec une architecture pleinement HA sont volontairement documentés : ils indiquent précisément ce qu'il faudrait ajouter à l'échelle d'une vraie production (second nœud physique, cluster, stockage partagé).
 

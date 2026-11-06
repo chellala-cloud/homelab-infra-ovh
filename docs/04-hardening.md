@@ -25,9 +25,9 @@ Chaque mesure bloque un type de problème différent. Aucune ne remplace les aut
 | Tunnel SSH (clé dédiée) | PC → port 22 → GUI pfSense et GUI Proxmox | règle OVH sur mon IP | accès aux interfaces web |
 | GUI Proxmox directe | `IP-DU-SERVEUR:8006` | règle OVH sur mon IP + TOTP | dernier recours |
 | VPN WireGuard | PC → IP failover (UDP) → LAN | VM pfSense en marche | accès aux interfaces web, sans dépendre de mon IP |
-| KVM/IPMI et rescue OVH | manager OVH | compte OVH uniquement | secours quand le SSH ne passe plus |
+| Console série (SOL) et rescue OVH | manager OVH | compte OVH uniquement | secours quand le SSH ne passe plus |
 
-Le KVM ne dépend ni du réseau du serveur, ni de pfSense, ni du SSH : c'est la dernière porte.
+La console du manager OVH ne dépend ni du réseau du serveur, ni de pfSense, ni du SSH : c'est la dernière porte.
 
 ## Firewall OVH — sur l'IP principale
 
@@ -35,17 +35,19 @@ Le KVM ne dépend ni du réseau du serveur, ni de pfSense, ni du SSH : c'est la 
 
 S'applique à l'IP principale du serveur (`IP-DU-SERVEUR`), celle qui donne accès à Proxmox (`:8006`) et au SSH (`:22`).
 
-| Ordre | Action | Protocole | IP source | Port source | Port destination | État TCP |
+| Priorité | Action | Protocole | IP source | Port source | Port destination | État TCP |
 |---|---|---|---|---|---|---|
-| 1 | Autoriser | TCP | tous | - | - | established |
-| 2 | Autoriser | TCP | mon IP perso | - | 22 | - |
-| 3 | Autoriser | TCP | mon IP perso | - | 8006 | - |
-| 4 | Autoriser | ICMP | tous | - | - | - |
-| 5 | Autoriser | TCP | tous | 53 | - | - |
-| 6 | Autoriser | UDP | tous | 53 | - | - |
-| 7 | Refuser | IPv4 | tous | - | - | - |
+| 0 | Autoriser | TCP | tous | - | - | established |
+| 1 | Autoriser | TCP | mon IP perso | - | 22 | - |
+| 2 | Autoriser | TCP | mon IP perso | - | 8006 | - |
+| 3 | Autoriser | ICMP | tous | - | - | - |
+| 4 | Autoriser | TCP | tous | 53 | - | - |
+| 5 | Autoriser | UDP | tous | 53 | - | - |
+| 19 | Refuser | IPv4 | tous | - | - | - |
 
-Ce pare-feu ne suit pas les connexions : la règle `established` (la première) est ce qui laisse revenir les réponses TCP aux connexions lancées depuis le serveur. Pour le DNS, les deux règles avec le port source 53 (TCP et UDP) laissent revenir les réponses des résolveurs. L'ICMP autorisé permet de tester avec `ping`. La dernière règle refuse tout le reste.
+Ce pare-feu ne suit pas les connexions (le manager précise que « established » s'appuie sur les indicateurs TCP, pas sur un suivi de session) : la règle `established` (la première) est ce qui laisse revenir les réponses TCP aux connexions lancées depuis le serveur. Pour le DNS, les deux règles avec le port source 53 (TCP et UDP) laissent revenir les réponses des résolveurs. L'ICMP autorisé permet de tester avec `ping`. La dernière règle refuse tout le reste.
+
+![Règles du pare-feu OVH de l'IP principale, interrupteur activé](img/01-ovh-firewall-ip-principale.png)
 
 **Vérifié** : `apt update`, la résolution DNS et la synchronisation de l'heure fonctionnent. Il n'y a pas de règle pour les réponses NTP (UDP, port source 123) : si l'heure cesse de se synchroniser, en ajouter une avant la règle de refus.
 
@@ -63,20 +65,26 @@ Ce pare-feu ne suit pas les connexions : la règle `established` (la première) 
 
 Le pare-feu d'OVH est propre à chaque IP : les règles de l'IP principale ne protègent pas l'IP failover. Il faut lui créer les siennes.
 
-| Ordre | Action | Protocole | IP source | Port source | Port destination | État TCP |
+| Priorité | Action | Protocole | IP source | Port source | Port destination | État TCP |
 |---|---|---|---|---|---|---|
-| 1 | Autoriser | TCP | tous | - | - | established |
-| 2 | Autoriser | TCP | tous | 53 | - | - |
-| 3 | Autoriser | UDP | tous | 53 | - | - |
-| 4 | Autoriser | UDP | tous | 123 | - | - |
-| 5 | Autoriser | UDP | tous | - | `PORT-WG` | - |
-| 6 | Refuser | IPv4 | tous | - | - | - |
+| 0 | Autoriser | TCP | tous | - | - | established |
+| 1 | Autoriser | TCP | tous | 53 | - | - |
+| 2 | Autoriser | UDP | tous | 53 | - | - |
+| 3 | Autoriser | UDP | tous | 123 | - | - |
+| 4 | Autoriser | UDP | tous | - | `PORT-WG` | - |
+| 19 | Refuser | IPv4 | tous | - | - | - |
 
 pfSense sort par cette IP : les mêmes règles DNS que sur l'IP principale s'appliquent, plus une règle pour les réponses NTP (UDP, port source 123), car pfSense synchronise son heure auprès de serveurs extérieurs.
+
+![Règles du pare-feu OVH de l'IP failover, interrupteur activé](img/02-ovh-firewall-ip-failover.png)
 
 **Vérifié après l'activation** : résolution DNS, synchronisation de l'heure, mises à jour de pfSense et passerelle en ligne.
 
 **Ajouté avec le VPN** : une règle qui autorise le port UDP de WireGuard (`PORT-WG`, en destination), placée avant le refus de l'IPv4. C'est le seul port ouvert à tout Internet.
+
+**Ce qui s'est passé** : en préparant les captures d'écran de ce chapitre, j'ai constaté que les deux règles DNS de l'IP failover avaient le `53` dans la colonne **Port de destination** au lieu de **Port source** : les deux champs étaient inversés. Ces règles laissaient donc passer des requêtes vers le port 53 de pfSense, et non les **réponses** des serveurs DNS, qui partent du port source 53. Mes tests de résolution n'avaient rien montré, ce qui peut s'expliquer par le cache de pfSense ou par un résolveur interne au réseau d'OVH, que ce pare-feu ne filtre pas. C'est le contrôle visuel de la capture qui a révélé l'erreur. J'ai supprimé les deux règles et je les ai recréées avec le port source 53, puis j'ai attendu qu'elles passent à « Actif ». Pour le vérifier, `drill @1.1.1.1 example.org` depuis pfSense interroge un serveur extérieur à OVH, dont la réponse revient avec le port source 53 : elle arrive bien (`NOERROR`).
+
+![Réponse DNS d'un serveur extérieur reçue par pfSense après la correction](img/02b-pfsense-drill-dns.png)
 
 ## SSH — couper la connexion par mot de passe
 
@@ -139,7 +147,7 @@ systemctl reload ssh
 
 Depuis un nouveau terminal, `ssh root@IP-DU-SERVEUR` doit être refusé, et `ssh adminsys@IP-DU-SERVEUR` doit fonctionner. Je garde la session ouverte jusqu'à ce test. Ce `sed` ne suffit pas à lui seul : la section suivante explique l'ordre de lecture des fichiers de configuration, et le fichier de référence qui garantit que rien ne contredit ces réglages.
 
-**À savoir** : le mot de passe de `sudo` est celui de l'utilisateur ; il va dans un gestionnaire de mots de passe. S'il est perdu, le KVM d'OVH permet de le réinitialiser (`passwd adminsys`). L'interface web de Proxmox continue d'utiliser `root@pam`, protégé par le TOTP.
+**À savoir** : le mot de passe de `sudo` est celui de l'utilisateur ; il va dans un gestionnaire de mots de passe. S'il est perdu, la console d'OVH permet de le réinitialiser (`passwd adminsys`). L'interface web de Proxmox continue d'utiliser `root@pam`, protégé par le TOTP.
 
 ## SSH — l'ordre de lecture des fichiers de configuration
 
@@ -193,7 +201,7 @@ last -ai | head -30
 - Les empreintes des connexions par clé doivent être celles de mes deux clés (administration et tunnel).
 - Je reconnais mes connexions à leur date et à leur heure.
 
-**Ce que ces réglages n'interdisent pas.** Ils ne concernent que le service SSH. La console KVM/IPMI d'OVH, le mode rescue et l'interface web de Proxmox (`root@pam`, avec le TOTP) ne passent pas par `sshd` : ils restent mes accès de secours. Je vérifie que le mot de passe `root` est défini (`passwd -S root` doit afficher `root P`) et je teste une fois la console KVM, avant d'en avoir besoin.
+**Ce que ces réglages n'interdisent pas.** Ils ne concernent que le service SSH. La console du manager OVH, le mode rescue et l'interface web de Proxmox (`root@pam`, avec le TOTP) ne passent pas par `sshd` : ils restent mes accès de secours. Je vérifie que le mot de passe `root` est défini (`passwd -S root` doit afficher `root P`) et je teste une fois la console du manager, avant d'en avoir besoin.
 
 ## SSH — limites sur les tentatives, les redirections et les logs
 
@@ -338,13 +346,13 @@ Si pfSense affiche *Potential DNS Rebind attack detected* en passant par `localh
 
 **Ce qui s'est passé** : au premier accès, le HTTPS de la GUI ne répondait pas (le `curl` restait muet), alors que le HTTP sur le port 80 fonctionnait. J'ai ouvert un tunnel vers le port 80, puis, depuis la GUI, j'ai activé le HTTPS sur le port 443 (**System → Advanced → Admin Access**). Le tunnel sert ensuite uniquement le port 443.
 
-## Secours — KVM/IPMI et mode rescue d'OVH
+## Secours — console du manager OVH et mode rescue
 
 Quand le SSH ne passe plus, deux accès ne dépendent pas de lui.
 
-**Si mon IP a changé** : le VPN reste utilisable, car il ne dépend pas de mon IP. Pour retrouver le SSH et le port 8006 directs, je relève ma nouvelle IP depuis le PC (`curl -4 ifconfig.me`) et je corrige dans le manager OVH les deux règles qui autorisent mon IP (ports 22 et 8006). Le KVM n'est pas nécessaire.
+**Si mon IP a changé** : le VPN reste utilisable, car il ne dépend pas de mon IP. Pour retrouver le SSH et le port 8006 directs, je relève ma nouvelle IP depuis le PC (`curl -4 ifconfig.me`) et je corrige dans le manager OVH les deux règles qui autorisent mon IP (ports 22 et 8006). La console n'est pas nécessaire.
 
-**KVM/IPMI** : console du serveur ouverte depuis le manager OVH. Elle fonctionne même si le réseau, pfSense ou le SSH sont en panne. Connexion avec le mot de passe root local (il passe par le clavier virtuel, pas par le SSH). Utile après une erreur dans la configuration `sshd` : corriger ou supprimer le fichier en cause, puis `sshd -t` et `systemctl reload ssh`. Le mot de passe root local doit rester dans un gestionnaire de mots de passe.
+**Console du manager** : OVH propose trois accès au serveur, le KVM à distance (écran graphique), l'IPMI (la carte de gestion) et le **SOL**, la console série dans un terminal texte. Ici, seul le SOL est accessible, et il me suffit : il affiche une invite `login:` où je me connecte en `root` avec le mot de passe local. Elle fonctionne même si le réseau, pfSense ou le SSH sont en panne, car la console passe par un réseau de gestion séparé. Connexion avec le mot de passe root local, qui ne passe pas par le SSH. Utile après une erreur dans la configuration `sshd` : corriger ou supprimer le fichier en cause, puis `sshd -t` et `systemctl reload ssh`. Le mot de passe root local doit rester dans un gestionnaire de mots de passe.
 
 **Mode rescue** : quand le système ne démarre plus.
 
@@ -400,6 +408,10 @@ Pour que le VPN soit joignable depuis Internet, pfSense doit avoir une adresse p
 
 Le tunnel est en `/24`, mais un seul client peut s'y connecter, grâce à trois verrous : seule la clé publique de mon PC est déclarée, ses *Allowed IPs* sont `10.6.0.2/32`, et les règles de l'interface WireGuard n'acceptent que cette adresse source.
 
+![Tunnel WireGuard de pfSense : adresse 10.6.0.1/24, port 51820, un pair](img/04-wireguard-tunnel.png)
+
+![Le seul pair déclaré, admin-pc : Allowed IPs 10.6.0.2/32, endpoint dynamique](img/05a-wireguard-pair.png)
+
 ### Ouvertures
 
 - **Pare-feu OVH de l'IP failover** : une règle UDP vers `PORT-WG`, avant le refus de l'IPv4 (voir plus haut).
@@ -414,6 +426,8 @@ Source fixée à `10.6.0.2/32`, jamais à l'alias *WireGuard subnets*, qui couvr
 | GUI pfSense | `192.168.100.1` | TCP 443 |
 | GUI Proxmox | `192.168.100.2` | TCP 8006 |
 | SSH de l'hôte | `192.168.100.2` | TCP 22 |
+
+![Les trois règles de l'interface WireGuard : source 10.6.0.2 seulement, destinations et ports précis](img/05b-wireguard-regles.png)
 
 ### Route sur l'hôte Proxmox
 
@@ -452,7 +466,7 @@ curl -kI https://192.168.100.1
 
 **Pas de handshake au premier essai.** Le fichier du client contenait une ancienne clé privée, qui ne correspondait pas à la clé publique déclarée dans pfSense. pfSense recevait les paquets sans reconnaître l'expéditeur, et ne répondait pas. Le test qui le prouve : `sudo awk '/PrivateKey/ {print $3}' /etc/wireguard/lab.conf | wg pubkey` doit donner exactement la clé du pair dans pfSense.
 
-**Le ping était bloqué.** Les journaux montraient `Default deny rule IPv4` sur `tun_wg0` pour un ICMP de `10.6.0.2` vers `192.168.100.1` : aucune règle ne l'autorisait. Le ping n'est qu'un outil de test : j'ai validé le VPN avec les trois accès réels (GUI de pfSense, GUI de Proxmox, SSH de l'hôte).
+**Le ping était bloqué.** Les journaux montraient `Default deny rule IPv4` sur `tun_wg0` pour un ICMP de `10.6.0.2` vers `192.168.100.1` : aucune règle ne l'autorisait. Le ping n'est qu'un outil de test : j'ai validé le VPN avec les trois accès réels (GUI de pfSense, GUI de Proxmox, SSH de l'hôte). J'avais pourtant gardé une règle `ping` dans la liste, dont le compteur restait à `0/0 B` : en relisant une capture d'écran, j'ai trouvé la cause. Le masque de sa destination était resté vide : la règle ne visait que l'unique adresse `192.168.100.0`, et non le réseau `192.168.100.0/24`, donc aucun ping ne la rencontrait jamais. Le ping n'étant pas nécessaire, j'ai supprimé la règle plutôt que de la corriger : une règle inutile n'a pas sa place dans une liste construite sur le moindre privilège.
 
 Le tunnel SSH reste en secours : il ne dépend ni de pfSense ni de WireGuard.
 
@@ -502,7 +516,7 @@ nft list ruleset | grep -B2 -A3 "192.0.2.1"
 fail2ban-client set sshd unbanip 192.0.2.1
 ```
 
-Le bannissement passe par nftables : Fail2ban crée une table propre, avec un ensemble `addr-set-sshd` qui contient les adresses bannies et une chaîne `f2b-chain` qui les rejette avant les autres règles. Cette table cohabite avec la table nftables de l'hôte décrite plus bas, chacune ne touchant pas à l'autre. Pour débannir une adresse : `fail2ban-client set sshd unbanip <IP>`, depuis le KVM si je suis bloqué.
+Le bannissement passe par nftables : Fail2ban crée une table propre, avec un ensemble `addr-set-sshd` qui contient les adresses bannies et une chaîne `f2b-chain` qui les rejette avant les autres règles. Cette table cohabite avec la table nftables de l'hôte décrite plus bas, chacune ne touchant pas à l'autre. Pour débannir une adresse : `fail2ban-client set sshd unbanip <IP>`, depuis la console du manager si je suis bloquée.
 
 **Ce qui s'est passé** : dès son installation, Fail2ban avait déjà banni deux adresses extérieures. Cela m'a fait vérifier le pare-feu OVH (voir plus haut) : il était désactivé.
 
@@ -558,7 +572,7 @@ systemd-run --on-active=600 --unit=nft-rollback /usr/sbin/nft delete table inet 
 nft -f /etc/nftables-hote.conf
 ```
 
-La minuterie supprime la table au bout de dix minutes. Je teste dans ce délai, depuis un second terminal et avec le KVM d'OVH ouvert : un SSH direct, l'interface web directe, le SSH par le VPN, un `apt update` et l'état de la passerelle dans pfSense. Si tout passe, j'annule le filet (`systemctl stop nft-rollback.timer`). Sinon, la règle disparaît toute seule. Ma session ouverte survit au chargement, grâce à la ligne `established,related`.
+La minuterie supprime la table au bout de dix minutes. Je teste dans ce délai, depuis un second terminal et avec la console du manager OVH ouverte : un SSH direct, l'interface web directe, le SSH par le VPN, un `apt update` et l'état de la passerelle dans pfSense. Si tout passe, j'annule le filet (`systemctl stop nft-rollback.timer`). Sinon, la règle disparaît toute seule. Ma session ouverte survit au chargement, grâce à la ligne `established,related`.
 
 ### La rendre permanente
 
@@ -606,6 +620,34 @@ Mon IP apparaît à trois endroits : les deux règles du pare-feu OVH (ports 22 
 **Nom de minuterie déjà pris.** `systemd-run` a refusé de recréer `nft-rollback` (« already loaded »), parce que l'unité précédente restait en mémoire après sa fin. `systemctl stop nft-rollback.timer nft-rollback.service` a libéré le nom.
 
 **pfSense ne démarrait pas avec l'hôte.** Le VPN dépend de la VM pfSense, qui n'avait pas l'option de démarrage automatique. Corrigé : `qm set 100 --onboot 1 --startup order=1,up=60` (pfSense démarre en premier, les VM suivantes attendent 60 secondes). Cela ne joue qu'au démarrage de l'hôte : si pfSense plante, il ne redémarre pas seul.
+
+## Test de redémarrage de l'hôte
+
+**Fait.** Le seul test qui prouve que tout ce que j'ai rendu permanent l'est vraiment : la règle nftables, le démarrage de pfSense, la route du VPN et Fail2ban. Je l'ai fait avec la console SOL du manager OVH ouverte, mes sauvegardes déjà copiées sur mon PC, et un contrôle préalable que tout était activé au démarrage :
+
+```bash
+systemctl is-enabled nftables-hote.service fail2ban.service
+qm config 100 | grep -E 'onboot|startup'
+grep -n "10.6.0.0" /etc/network/interfaces
+```
+
+Le redémarrage (`systemctl reboot`) a duré **sept minutes**, dont la plus grande partie dans le BIOS du serveur dédié, avant que Linux démarre : ce délai est sans rapport avec ma configuration.
+
+Après le redémarrage, vérifié depuis la console :
+
+| Vérification | Résultat |
+|---|---|
+| `systemctl --failed` | aucun service en échec |
+| `systemctl is-active nftables-hote fail2ban pveproxy` | trois fois `active` |
+| `nft list tables` | la table `hote` est revenue seule |
+| `qm list` | la VM pfSense est en `running`, démarrée par l'hôte |
+| `ip route get 10.6.0.2` | `via 192.168.100.1 dev vmbr101` : la route du VPN s'est appliquée seule |
+| `wg-quick up lab`, puis `ssh adminsys@192.168.100.2` | le VPN se reconnecte et le SSH passe |
+| `fail2ban-client status sshd` | la jail `sshd` est chargée |
+
+**Démarrage de pfSense.** Dans l'interface de Proxmox, le nœud affichait une durée de fonctionnement de 5 h 23 min 13 s et la VM pfSense de 5 h 22 min 46 s : pfSense a démarré environ 27 secondes après l'hôte, sans intervention, grâce à `onboot` et à l'ordre de démarrage.
+
+**Un point à connaître sur Fail2ban.** Juste après le redémarrage, `nft list tables` ne montrait que la table `hote`, sans celle de Fail2ban. Je pensais d'abord à une panne, ou à un simple délai de démarrage. Un bannissement de test (`fail2ban-client set sshd banip 192.0.2.1`, puis `unbanip`) a montré que Fail2ban agit : la jail est chargée, et le blocage fonctionne. La table de Fail2ban n'est donc pas un indicateur fiable de son état, qui se vérifie avec `fail2ban-client status sshd`.
 
 ## nftables sur chaque VM (Reverse Proxy / Web / BDD)
 

@@ -344,13 +344,13 @@ qm start 100
 
 La console ne permet pas cette configuration : elle refuse une passerelle située hors du sous-réseau de l'interface, ce qui est le cas d'une IP failover en `/32`.
 
-1. **System → Routing → Gateways → Add** : interface `WAN`, famille `IPv4`, nom `OVH_GW`, adresse `<PASSERELLE_OVH>`, option **Use non-local gateway through interface specific route** cochée.
-2. **Interfaces → WAN** : type `Static IPv4`, adresse `<IP_FAILOVER>` avec le masque `/32`, passerelle amont `OVH_GW`. Dans *Reserved Networks*, cocher **Block private networks and loopback addresses** et **Block bogon networks** : elles ne servaient pas pendant le sas, car le WAN était privé, et elles sont justifiées maintenant qu'il est public.
-3. **System → Routing → Gateways** : passerelle par défaut IPv4 = `OVH_GW`, puis suppression de l'ancienne passerelle `10.0.0.1`.
+1. **System → Routing → Gateways → Add** : interface `WAN`, famille `IPv4`, nom `ovh_gw_failover`, adresse `<PASSERELLE_OVH>`, option **Use non-local gateway through interface specific route** cochée.
+2. **Interfaces → WAN** : type `Static IPv4`, adresse `<IP_FAILOVER>` avec le masque `/32`, passerelle amont `ovh_gw_failover`. Dans *Reserved Networks*, cocher **Block private networks and loopback addresses** et **Block bogon networks** : elles ne servaient pas pendant le sas, car le WAN était privé, et elles sont justifiées maintenant qu'il est public.
+3. **System → Routing → Gateways** : passerelle par défaut IPv4 = `ovh_gw_failover`, puis suppression de l'ancienne passerelle `10.0.0.1`.
 
 ### 12.4 Vérifier
 
-- **Status → Gateways** : `OVH_GW` en ligne. Juste après la configuration, le statut a affiché `Offline (packet loss)` alors que la passerelle répondait au ping : des changements n'avaient pas été appliqués. Après chaque modification de passerelle ou d'interface, cliquer sur **Apply Changes** et attendre une trentaine de secondes avant de lire le statut.
+- **Status → Gateways** : `ovh_gw_failover` en ligne. Juste après la configuration, le statut a affiché `Offline (packet loss)` alors que la passerelle répondait au ping : des changements n'avaient pas été appliqués. Après chaque modification de passerelle ou d'interface, cliquer sur **Apply Changes** et attendre une trentaine de secondes avant de lire le statut.
 - **Diagnostics → Ping** : `8.8.8.8` depuis l'interface `WAN`.
 - **Diagnostics → DNS Lookup** : résoudre `debian.org`.
 - **Status → NTP** : synchronisation active.

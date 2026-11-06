@@ -80,7 +80,7 @@ Deux trajets, deux rôles pour l'hôte :
 
 **Message à la prise de l'instantané.** `skipping guest filesystem freeze - disabled in VM options` : l'agent invité QEMU n'est pas activé, donc le système de fichiers n'est pas gelé avant l'instantané. Sans conséquence sur une installation neuve ; l'instantané reste utilisable pour un retour en arrière.
 
-**Passerelle `Offline (packet loss)` après la bascule.** Juste après avoir configuré le WAN en `/32`, **Status → Gateways** affichait `OVH_GW` en `Offline (packet loss)`, alors que la passerelle répondait au ping. La cause : des changements n'avaient pas été appliqués (**Apply Changes**), donc le statut n'était pas à jour. Je ne me suis pas fié à ce seul statut : j'ai vérifié la sortie par un ping direct vers `8.8.8.8` depuis le WAN, puis le DNS, l'heure et les mises à jour de pfSense. Je clique désormais sur **Apply Changes** après chaque modification de passerelle ou d'interface.
+**Passerelle `Offline (packet loss)` après la bascule.** Juste après avoir configuré le WAN en `/32`, **Status → Gateways** affichait `ovh_gw_failover` en `Offline (packet loss)`, alors que la passerelle répondait au ping. La cause : des changements n'avaient pas été appliqués (**Apply Changes**), donc le statut n'était pas à jour. Je ne me suis pas fié à ce seul statut : j'ai vérifié la sortie par un ping direct vers `8.8.8.8` depuis le WAN, puis le DNS, l'heure et les mises à jour de pfSense. Je clique désormais sur **Apply Changes** après chaque modification de passerelle ou d'interface.
 
 **NAT du sas posé à la main.** Au retrait du sas, le fichier de règles prévu (`/etc/nftables-vnat.conf`) n'existait pas et le bloc `vmbr100` n'avait aucune ligne `post-up` : le masquerade avait été ajouté à la main avec `iptables` (`-A POSTROUTING -s 10.0.0.0/24 -o vmbr0 -j MASQUERADE`), et le service `nftables` est désactivé. Il n'était donc pas persistant. Je l'ai retiré avec `iptables -t nat -D …`, puis j'ai vérifié qu'aucune règle ne restait (`iptables -t nat -S`, `nft list ruleset`). Pour un NAT durable, j'utiliserais une table nftables dédiée, comme décrit dans le pas-à-pas.
 
@@ -105,6 +105,8 @@ Si pfSense affiche *Potential DNS Rebind attack detected*, j'ajoute `localhost` 
 5. Sortie Internet vérifiée : ping vers `8.8.8.8` depuis le WAN, DNS, heure (NTP) et mises à jour de pfSense.
 6. Règles du pare-feu OVH de l'IP failover créées, puis activées (voir [04-hardening.md](04-hardening.md)), puis mêmes vérifications.
 7. VPN WireGuard installé et testé (voir [04-hardening.md](04-hardening.md)), puis sas retiré : bloc `vmbr100` supprimé de `/etc/network/interfaces` et règle de masquerade retirée (`iptables -t nat -D POSTROUTING -s 10.0.0.0/24 -o vmbr0 -j MASQUERADE`). Je garde `vmbr101`, le LAN des futures VM. J'ai ensuite retesté tous les accès : VPN, tunnel SSH, SSH direct, GUI de Proxmox directe et sortie de pfSense.
+
+![Passerelle ovh_gw_failover en ligne, sans perte de paquets](img/03-pfsense-passerelles.png)
 
 Le double NAT a disparu avec la bascule : les VM sortiront par pfSense avec l'IP failover.
 
